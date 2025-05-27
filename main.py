@@ -1,5 +1,8 @@
 import os
 import logging
+import json
+import io # Para lidar com arquivos em memória
+
 from fastapi import FastAPI, Form, UploadFile, File, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,32 +11,31 @@ from dotenv import load_dotenv
 
 # Google Cloud Imports
 from google.cloud import storage
-# from google.cloud import aiplatform # Descomentar para usar Vertex AI (Gemini)
+import vertexai
+from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import json
-
-# Para simulação de LLM, e futura integração real
-# from vertexai.preview.generative_models import GenerativeModel # Exemplo de import para Gemini
-# import vertexai # Exemplo para inicialização do Vertex AI
 
 # --- Configuração de Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
 # --- Carrega variáveis de ambiente (para desenvolvimento local) ---
+# Este passo só funciona se você tiver um arquivo .env na raiz do seu projeto local.
+# No Cloud Run, as variáveis de ambiente são configuradas diretamente no serviço.
 load_dotenv()
 
 app = FastAPI(
     title="Gerador de ETP e TR Xertica.ai",
-    description="Backend inteligente para gerar documentos ETP e TR.",
+    description="Backend inteligente para gerar documentos ETP e TR com IA da Xertica.ai.",
     version="0.1.0"
 )
 
 # --- Configurações CORS ---
 # Permite que seu frontend (se estiver em outro domínio) acesse o backend.
-# Em produção, substitua "*" pelos domínios específicos do seu frontend.
-origins = ["*"] # Ideal para desenvolvimento. Em PROD, restrinja!
+# Em produção, substitua "*" pelos domínios específicos do seu frontend para segurança.
+origins = ["*"] # Permite qualquer origem para desenvolvimento. CUIDADO em produção!
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -42,21 +44,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Variáveis de Ambiente e Inicialização de Clientes GCP ---
-# Certifique-se que estas variáveis estejam setadas no ambiente do Cloud Run!
+# --- Variáveis de Ambiente e Inicialização de Clientes GCP / Vertex AI ---
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+GCP_PROJECT_LOCATION = os.getenv("GCP_PROJECT_LOCATION", "us-central1") # Região para o Vertex AI
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "docsorgaospublicos")
 
+# Validação inicial das variáveis de ambiente obrigatórias
 if not GCP_PROJECT_ID:
-    logger.error("GCP_PROJECT_ID não está configurado. Verifique as variáveis de ambiente do Cloud Run.")
-    # Em um cenário de produção mais rígido, levantaria uma exceção aqui.
+    logger.error("GCP_PROJECT_ID não está configurado.")
+    raise Exception("GCP_PROJECT_ID não configurado. Por favor, defina a variável de ambiente.")
 
+if not GCP_PROJECT_LOCATION:
+    logger.error("GCP_PROJECT_LOCATION não está configurado.")
+    raise Exception("GCP_PROJECT_LOCATION não configurado. Por favor, defina a variável de ambiente.")
+
+# Inicializa Vertex AI e modelo Gemini
+try:
+    vertexai.init(project=GCP_PROJECT_ID, location=GCP_PROJECT_LOCATION)
+    # Usando gemini-2.0-flash conforme solicitado
+    gemini_model = GenerativeModel("gemini-2.0-flash") 
+    _generation_config = GenerationConfig(temperature=0.7, max_output_tokens=8192, response_mime_type="application/json")
+    logger.info(f"Vertex AI inicializado com projeto '{GCP_PROJECT_ID}' e localização '{GCP_PROJECT_LOCATION}'. Modelo Gemini-2.0-flash carregado.")
+except Exception as e:
+    logger.exception(f"Erro ao inicializar Vertex AI ou carregar modelo Gemini: {e}")
+    raise HTTPException(status_code=500, detail=f"Falha ao iniciar LLM: {e}. Verifique as permissões da Service Account e as variáveis GCP_PROJECT_ID/GCP_PROJECT_LOCATION.")
+
+
+# Inicializa cliente de Cloud Storage
 try:
     storage_client = storage.Client(project=GCP_PROJECT_ID)
     logger.info("Google Cloud Storage client inicializado.")
 except Exception as e:
     logger.exception("Erro ao inicializar Google Cloud Storage client.")
-    # A aplicação pode continuar, mas a leitura do GCS falhará.
+    raise HTTPException(status_code=500, detail=f"Falha ao inicializar GCS: {e}")
+
 
 # --- Funções Auxiliares para GCP ---
 
@@ -64,6 +85,7 @@ def authenticate_google_docs_and_drive():
     """
     Autentica com as APIs do Google Docs e Drive.
     No Cloud Run, utiliza as credenciais da Service Account do próprio serviço (ADC - Application Default Credentials).
+    Certifique-se de que a Service Account tenha as permissões necessárias.
     """
     try:
         docs_service = build('docs', 'v1', cache_discovery=False)
@@ -72,7 +94,7 @@ def authenticate_google_docs_and_drive():
         return docs_service, drive_service
     except Exception as e:
         logger.exception("Erro ao autenticar/inicializar Google Docs/Drive APIs.")
-        raise HTTPException(status_code=500, detail=f"Falha na autenticação da API do Google Docs/Drive: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha na autenticação da API do Google Docs/Drive: {e}. Verifique as permissões da Service Account (Docs API Editor, Drive API File Creator).")
 
 def get_gcs_file_content(file_path: str) -> Optional[str]:
     """Lê o conteúdo de um arquivo de texto de um bucket GCS."""
@@ -95,10 +117,14 @@ async def upload_file_to_gcs(upload_file: UploadFile, destination_path: str) -> 
         bucket = storage_client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(destination_path)
         
-        contents = await upload_file.read() # Ler o conteúdo do UploadFile
+        # O .file do UploadFile é um objeto de arquivo (SpoolReader), pode ser lido diretamente.
+        # Mas para garantir que o conteúdo seja lido completamente antes do upload, 
+        # e evitar problemas com operações assíncronas, lemos para a memória.
+        contents = await upload_file.read() 
+        upload_file.file.seek(0) # Resetar o ponteiro do arquivo se precisar reler
 
         blob.upload_from_string(contents, content_type=upload_file.content_type)
-        blob.make_public() # Torna o objeto publicamente acessível via URL
+        blob.make_public() # Torna o objeto publicamente acessível via URL. CUIDADO com dados sensíveis.
         logger.info(f"Arquivo '{upload_file.filename}' carregado para GCS://{GCS_BUCKET_NAME}/{destination_path} e tornado público.")
         return blob.public_url
     except Exception as e:
@@ -107,167 +133,186 @@ async def upload_file_to_gcs(upload_file: UploadFile, destination_path: str) -> 
 
 async def extract_text_from_pdf(pdf_file: UploadFile) -> str:
     """
-    Função mock para extrair texto de PDF.
-    EM UMA IMPLEMENTAÇÃO REAL:
-    - Usaria Google Cloud Document AI (recomedado para precisão e complexidade)
-    - OU Google Cloud Vision AI (para OCR em PDFs escaneados)
-    - OU Bibliotecas Python como `pypdf`, `pdfminer.six` (para PDFs text-searchable).
+    Extrai texto de um PDF. Esta implementação é um MOCK/SIMULAÇÃO.
+    Para produção, considere usar:
+    - `pypdf` ou `pdfminer.six` para PDFs pesquisáveis por texto.
+    - Google Cloud Document AI ou Vision AI para PDFs que são imagens ou complexos.
+    O uso de `await pdf_file.read()` garante que o conteúdo do arquivo é lido corretamente.
     """
-    logger.info(f"Simulando extração de texto de PDF: {pdf_file.filename}")
-    # Conteúdo real do PDF seria lido aqui:
-    # content = await pdf_file.read()
-    # text = seu_extrator_de_pdf(content)
-    # Exemplo:
-    # from pypdf import PdfReader
-    # reader = PdfReader(io.BytesIO(content))
-    # text = ""
-    # for page in reader.pages:
-    #     text += page.extract_text()
-    
-    return f"Conteúdo extraído da proposta (SIMULADO do PDF: {pdf_file.filename})" \
-           f" - Este texto seria analisado pelo Vertex AI/Gemini para gerar o documento." \
-           f" Ex.: Esta proposta comercial detalha [serviços], [prazos] e tem valor estimado de [Valor]."
-
-# --- LÓGICA CENTRAL: SIMULAÇÃO DO LLM (COM PROMPT IMPECÁVEL) ---
-def simulate_llm_response(prompt: str, context_data: Dict) -> Dict:
-    """
-    Simula a resposta de um LLM (como Google Gemini via Vertex AI) para gerar o conteúdo do ETP/TR.
-    Este é o local onde a chamada à API REAL do LLM seria feita.
-    """
-    logger.info(f"Iniciando simulação LLM. Prompt length: {len(prompt)} chars. Context keys: {list(context_data.keys())}")
-
-    # --- SIMULAÇÃO DA INFERÊNCIA E GERAÇÃO DE CONTEÚDO PELO LLM ---
-    # Imagine que o LLM recebeu o 'prompt' completo com todos os dados do formulário e contextos do GCS/PDFs.
-    # Ele agora processa essa informação para gerar o ETP e TR de forma inteligente.
-
-    # Inferência para as seções ETP (Necessidade, Solução, Justificativa Contratual, Análise de Riscos, Benefícios, Cronograma, Valor Estimado)
-    problem = context_data.get("justificativaNecessidade", "um problema complexo no órgão.")
-    objective = context_data.get("objetivoGeral", "alcançar novos patamares de eficiência.")
-    orgao_nome = context_data.get('orgaoSolicitante', 'O Órgão Solicitante')
-    titulo_projeto = context_data.get('tituloProjeto', 'uma nova iniciativa')
-
-    accelerator_benefits_summary = []
-    for product_name in context_data.get("produtosXertica", []):
-        # A IA "leria" os BC/DS/OP para extrair estes detalhes
-        product_desc_from_bc = context_data.get(f"{product_name}_BC.txt", "") # Conteúdo real do BC do GCS
-        # Aqui, simula a sumarização ou extração de pontos chave pelo LLM
-        simulated_product_summary = f"O acelerador **{product_name}** da Xertica.ai oferece funcionalidades inovadoras para {problem.lower()}, transformando os desafios em oportunidades. Baseado em avançadas técnicas de IA, visa {objective.lower()} com agilidade e precisão."
+    logger.info(f"Iniciando simulação de extração de texto de PDF: {pdf_file.filename}")
+    try:
+        # Conteúdo do PDF lido, mas não processado por uma biblioteca de PDF real aqui
+        _ = await pdf_file.read() # Lê o conteúdo para que o fluxo do UploadFile seja consumido
+        pdf_file.file.seek(0) # Resetar o ponteiro para caso o UploadFile precise ser consumido novamente (ex: para upload GCS)
         
-        # Se houver integração específica do usuário, o LLM a usaria para refinar a descrição
-        customer_specific_integration = context_data.get(f"integracao_{product_name}", "").strip()
-        if customer_specific_integration:
-            simulated_product_summary += f" Com foco especial na aplicação: '{customer_specific_integration}', garantindo que a solução se ajuste perfeitamente às necessidades operacionais de {orgao_nome}."
+        # Retorna um texto simulado que o Gemini "leria"
+        return (f"Conteúdo extraído (SIMULADO) do PDF '{pdf_file.filename}'. "
+                f"Este texto representa o que o Gemini 'lê' de sua proposta. "
+                f"Contém detalhes sobre os serviços, cronogramas, valores e condições do projeto. "
+                f"Exemplificando: A proposta comercial detalha [serviços X, Y, Z], [valor total estimado A], [condições de pagamento B]. "
+                f"A proposta técnica aborda [metodologia de implementação C], [equipe D], [integração com sistemas E] e [cronograma detalhado F]."
+               )
+    except Exception as e:
+        logger.exception(f"Erro simulado na extração de texto do PDF {pdf_file.filename}.")
+        # Lançar exceção ou retornar uma string de erro caso a extração real falhe.
+        return f"Erro na extração de texto do PDF: {e}. Conteúdo indisponível para análise pelo Gemini."
 
-        accelerator_benefits_summary.append(simulated_product_summary)
-
-    # Conteúdo das propostas, que o LLM "leu" (simuladamente)
-    proposta_comercial_text = context_data.get("proposta_comercial_content", "Não foi possível extrair conteúdo da proposta comercial.")
-    proposta_tecnica_text = context_data.get("proposta_tecnica_content", "Não foi possível extrair conteúdo da proposta técnica.")
-
-    # Justificativa Legal - LLM inferiria com base no modeloLicitacao e contexto legal (mti/mpap)
-    contracting_model = context_data.get("modeloLicitacao", "Não Informado")
-    legal_justification_llm_simulated = ""
-    if "Art. 75 Contratacao via MTI" == contracting_model:
-        legal_justification_llm_simulated = f"A contratação via MTI justifica-se no Art. 75, IV, 'e' da Lei nº 14.133/2021, por envolver contratação com entidade da Administração Pública para atender a uma necessidade institucional, otimizando recursos e aproveitando o know-how existente."
-    elif "Adesao a ATA do MPAP" == contracting_model:
-        legal_justification_llm_simulated = f"A adesão à Ata de Registro de Preços do MPAP está fundamentada no Art. 86 da Lei nº 14.133/2021 e no Decreto nº 11.462/2023, proporcionando celeridade e economicidade pela utilização de condições já consolidadas."
-    elif "Inexigibilidade via Declaracao ABES" == contracting_model:
-        legal_justification_llm_simulated = f"A inexigibilidade de licitação, conforme o Art. 74 da Lei nº 14.133/2021, aplica-se à inviabilidade de competição. A declaração da ABES é crucial para atestar a exclusividade da solução de IA proposta pela Xertica.ai, confirmando a essencialidade e singularidade do objeto."
-    else:
-        legal_justification_llm_simulated = f"O modelo de '{contracting_model}' será aplicado conforme os artigos pertinentes da Lei nº 14.133/2021, garantindo a seleção da proposta mais vantajosa para a Administração Pública."
-
-    # Análise de Riscos - LLM geraria com base no conhecimento ou no arquivo de risco do GCS.
-    risk_analysis_llm_simulated = """
-    **Análise Preliminar de Riscos e Mitigação:**
-    1.  **Risco de Adaptação Tecnológica:** Implementação de novas tecnologias pode requerer adaptação.
-        *   **Mitigação:** Suporte técnico dedicado da Xertica.ai e programas de treinamento abrangentes.
-    2.  **Risco de Segurança de Dados:** Manuseio de informações sensíveis requer robustez.
-        *   **Mitigação:** Soluções Xertica.ai desenvolvidas com princípios de Privacy by Design e Security by Default, em conformidade com a LGPD e melhores práticas de mercado.
-    3.  **Risco de Interrupção de Serviço:** Eventuais falhas na infraestrutura de nuvem.
-        *   **Mitigação:** Arquitetura de alta disponibilidade no GCP, redundância e planos de contingência, com monitoramento ativo e SLAs claros.
+# --- LÓGICA CENTRAL: REAL LLM CALL (GOOGLE GEMINI 2.0 Flash) ---
+async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
     """
+    Gera o conteúdo do ETP e TR utilizando o modelo Google Gemini.
+    O prompt é construído dinamicamente com base em dados do formulário, GCS e PDFs.
+    """
+    logger.info(f"Enviando dados para o modelo Gemini para geração de ETP/TR.")
+
+    # Constrói o PROMPT COMPLETO para o Gemini.
+    # Este prompt é a INSTRUÇÃO CHAVE que direciona o comportamento do LLM.
+
+    # Dados do Formulário
+    orgao_nome = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
+    titulo_projeto = llm_context_data.get('tituloProjeto', 'uma iniciativa')
+    justificativa_necessidade = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
+    objetivo_geral = llm_context_data.get('objetivoGeral', 'um objetivo ambicioso.')
+    prazos_estimados = llm_context_data.get('prazosEstimados', 'prazos a serem definidos.')
+    valor_estimado = llm_context_data.get('valorEstimado')
+    modelo_licitacao = llm_context_data.get('modeloLicitacao', 'uma modalidade padrão.')
+    parcelamento_contratacao = llm_context_data.get('parcelamentoContratacao', 'Não especificado.')
+    justificativa_parcelamento = llm_context_data.get('justificativaParcelamento', 'Não se aplica.')
+    contexto_geral_orgao = llm_context_data.get('contextoGeralOrgao', '')
+
+
+    # Detalhes de Aceleradores Selecionados
+    accelerator_details_str = []
+    for product_name in llm_context_data.get("produtosXertica", []):
+        user_integration_detail = llm_context_data.get(f"integracao_{product_name}", "").strip()
+        # Injete aqui os conteúdos reais dos BC/DS/OP para o Gemini ler.
+        # Para o prompt do LLM, é melhor ter o conteúdo inline, não apenas uma referência.
+        bc_content_prod = llm_context_data.get(f"{product_name}_BC_GCS", "Descrição básica não encontrada.")
+        ds_content_prod = llm_context_data.get(f"{product_name}_DS_GCS", "Detalhes técnicos não encontrados.")
+        op_content_prod = llm_context_data.get(f"{product_name}_OP_GCS", "Plano operacional não encontrado.")
+
+        detail = f"""
+        - **Acelerador:** {product_name}
+          - **Resumo Funcional (do GCS):** {bc_content_prod[:500]}... (Primeiros 500 caracteres do Battle Card)
+          - **Detalhes Técnicos (do GCS):** {ds_content_prod[:500]}... (Primeiros 500 caracteres do Data Sheet)
+          - **Aplicação Específica (do usuário):** {user_integration_detail if user_integration_detail else 'Nenhuma aplicação específica detalhada pelo usuário.'}
+        """
+        accelerator_details_str.append(detail)
     
-    # Construção do ETP (em Markdown, para fácil inserção no Docs)
-    etp_content = f"""
-# ESTUDO TÉCNICO PRELIMINAR (ETP)
+    accelerator_details_prompt_section = "\n".join(accelerator_details_str) if accelerator_details_str else "Nenhum acelerador Xertica.ai detalhado."
 
-## 1. Necessidade da Contratação e Problema a ser Resolvido
+    # Conteúdo das Propostas PDF (se extraído)
+    proposta_comercial_content = llm_context_data.get("proposta_comercial_content", "Não foi possível extrair conteúdo da proposta comercial.")
+    proposta_tecnica_content = llm_context_data.get("proposta_tecnica_content", "Não foi possível extrair conteúdo da proposta técnica.")
 
-O {orgao_nome} busca, por meio da iniciativa '{titulo_projeto}', endereçar um desafio crítico identificado: **{problem}**.
-{context_data.get('contextoGeralOrgao', '')}
+    # Conteúdo de Contexto Legal/Risco (GCS)
+    mti_contrato_exemplo = llm_context_data.get("MTI_CONTRATO_EXEMPLO.txt", "Nenhum contrato MTI de exemplo.")
+    mpap_ata_exemplo = llm_context_data.get("MPAP_ATA_EXEMPLO.txt", "Nenhuma ata MPAP de exemplo.")
+    risk_analysis_context = llm_context_data.get("RISK_ANALYSIS_CONTEXT.txt", "Nenhum contexto de análise de risco.")
 
-## 2. Objetivo da Contratação
 
-O principal objetivo a ser alcançado com esta contratação é: **{objective}**. Espera-se que esta solução traga avanços significativos na gestão e operação do {orgao_nome}.
+    # INÍCIO DO PROMPT PARA O LLM
+    llm_prompt_content = f"""
+    Como assistente de IA especializado em licitações públicas e soluções de IA da Xertica.ai, sua missão é elaborar um ETP e um TR rigorosos e completos.
 
-## 3. Solução Proposta - Aceleradores Xertica.ai
+    **Sua resposta FINAL DEVE ser UM OBJETO JSON VÁLIDO.**
 
-Para atender à necessidade e ao objetivo, propõe-se a implementação das seguintes soluções de Inteligência Artificial da Xertica.ai, que se alinham perfeitamente ao contexto do órgão:
+    **Formato do JSON de Saída:**
+    ```json
+    {{
+      "subject": "Título do Documento (ETP e TR)",
+      "etp_content": "Conteúdo completo do ETP em Markdown",
+      "tr_content": "Conteúdo completo do TR em Markdown"
+    }}
+    ```
 
-{chr(10).join(accelerator_benefits_summary)}
+    **Instruções Detalhadas para o Conteúdo:**
 
-## 4. Modelo de Contratação e Justificativa Legal
+    **I. Estudo Técnico Preliminar (ETP):**
 
-A contratação será realizada sob a modalidade de **{contracting_model}**.
-**Justificativa Legal:** {legal_justification_llm_simulated}
+    *   **Título Principal:** "ESTUDO TÉCNICO PRELIMINAR (ETP)"
+    *   **Subtítulos:**
+        *   "1. Necessidade da Contratação e Problema a ser Resolvido": Destaque o problema do órgão (`justificativaNecessidade`) e o contextualize, usando `contextoGeralOrgao` se fornecido.
+        *   "2. Objetivo da Contratação": Descreva o `objetivoGeral` do órgão de forma clara e mensurável.
+        *   "3. Solução Proposta - Aceleradores Xertica.ai":
+            *   Descreva cada acelerador selecionado (`produtosXertica`) utilizando os conteúdos fornecidos dos BC/DS/OP do GCS e a aplicação específica (`integracao_`) do usuário.
+            *   **Crucial:** Explique como cada acelerador *diretamente* resolve o problema e atinge o objetivo do órgão.
+            *   Use o conteúdo da proposta técnica para enriquecer a descrição da solução.
+        *   "4. Modelo de Contratação e Justificativa Legal":
+            *   Especifique o `modeloLicitacao`.
+            *   Justifique legalmente a escolha com base na Lei nº 14.133/2021. Se for dispensa/inexigibilidade (Art. 75, Adesão ATA MPAP, Inexigibilidade ABES), o LLM deve citar os artigos relevantes e usar os **exemplos de contrato MTI, ATA MPAP ou declaração ABES** (se o conteúdo GCS foi fornecido) para embasar a inviabilidade de competição/viabilidade.
+        *   "5. Análise Preliminar de Riscos e Mitigação":
+            *   Descreva riscos genéricos de projetos de TI/IA no setor público (integração, segurança de dados, adaptação de usuários, cronograma, dependência de fornecedor).
+            *   Para cada risco, proponha medidas de mitigação. Se `RISK_ANALYSIS_CONTEXT` foi fornecido, utilize-o como base para os riscos e mitigações.
+        *   "6. Cronograma Estimado": Inclua os `prazosEstimados`.
+        *   "7. Valor Estimado da Contratação": Mostre o `valorEstimado`. Se `valorEstimado` for N/A, diga "a ser definido em orçamento detalhado."
+        *   "8. Aspectos do Parcelamento": Explane sobre a decisão de `parcelamentoContratacao` e adicione a `justificativaParcelamento` se aplicável.
 
-## 5. Análise Preliminar de Riscos e Mitigação
+    **II. Termo de Referência (TR):**
 
-{risk_analysis_llm_simulated}
+    *   **Título Principal:** "TERMO DE REFERÊNCIA (TR)"
+    *   **Subtítulos:**
+        *   "1. Objeto da Contratação": Reafirme o objeto (o que será contratado) de forma clara e concisa, ligando-o à necessidade e objetivo do órgão.
+        *   "2. Especificações Técnicas Detalhadas das Soluções":
+            *   Detalhe as funcionalidades e características dos aceleradores selecionados.
+            *   Use o conteúdo de BC/DS/OP e, se relevante, a proposta técnica.
+            *   Aborde requisitos não funcionais (performance, segurança, escalabilidade) se a informação da proposta técnica/acelerador permitir.
+        *   "3. Regime de Execução": Especifique `modeloLicitacao`.
+        *   "4. Condições e Prazos de Execução": Detalhe `prazosEstimados`.
+        *   "5. Anexos":
+            *   Mencione a Proposta Comercial e Proposta Técnica como anexos, indicando que foram fornecidas como PDFs.
 
-## 6. Cronograma Estimado
+    **III. Qualidade e Formato:**
+    *   O tom deve ser formal, técnico e alinhado aos padrões de documentos governamentais brasileiros.
+    *   Use Markdown para estruturar o conteúdo (títulos com #, listas com -, negrito com **, etc.).
+    *   Sua resposta DEVE ser um JSON válido contendo as chaves `subject`, `etp_content`, `tr_content`.
 
-Os prazos estimados para implantação e execução da solução são: **{context_data.get('prazosEstimados')}**.
+    ---
+    **DADOS FORNECIDOS PELO USUÁRIO (Órgão Solicitante):**
+    {json.dumps(llm_context_data, indent=2)}
 
-## 7. Valor Estimado da Contratação
+    ---
+    **CONTEÚDO EXTRAÍDO DAS PROPOSTAS XERTICA.AI (Anexos PDF):**
+    Proposta Comercial: {proposta_comercial_content}
+    Proposta Técnica: {proposta_tecnica_content}
 
-O valor estimado global para esta contratação é de **R$ {context_data.get('valorEstimado', 'a ser definido em detalhe no orçamento')}**.
+    ---
+    **CONTEÚDO DE CONTEXTO GCS (Battle Cards, Data Sheets, OP, Documentos Legais):**
+    {gcs_accel_str}
+    {gcs_legal_str}
 
-## 8. Aspectos do Parcelamento (se aplicável)
+    ---
+    Agora, gere o JSON com o 'subject', 'etp_content' e 'tr_content' conforme as instruções.
+    """
 
-**Decisão sobre Parcelamento:** **{context_data.get('parcelamentoContratacao')}**.
-**Justificativa:** {context_data.get('justificativaParcelamento', 'Não se aplica.')}
+    # --- 4. CHAMADA REAL AO MODELO GEMINI ---
+    try:
+        response = await gemini_model.generate_content_async(
+            llm_prompt_content,
+            generation_config=_generation_config
+        )
+        
+        # O modelo é instruído a retornar JSON diretamente via response_mime_type no generation_config.
+        # Precisamos ter certeza que o conteúdo de texto da resposta é um JSON válido.
+        if response.text:
+            generated_content = json.loads(response.text)
+            logger.info("Conteúdo gerado pelo Gemini e parseado com sucesso.")
+            return generated_content
+        else:
+            logger.warning("Resposta do Gemini vazia ou não contém texto.")
+            raise Exception("Resposta vazia do modelo Gemini.")
 
-"""
+    except json.JSONDecodeError as e:
+        logger.exception("Erro ao parsear JSON da resposta do Gemini.")
+        # É crucial logar a resposta bruta do Gemini aqui para depuração.
+        # response.text pode ser acessível aqui.
+        raise HTTPException(status_code=500, detail=f"Erro no formato JSON retornado pelo Gemini: {e}")
+    except Exception as e:
+        logger.exception(f"Erro ao chamar a API do Gemini: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha na geração de conteúdo via IA: {e}")
 
-    # Construção do TR (em Markdown)
-    tr_content = f"""
-# TERMO DE REFERÊNCIA (TR)
 
-## 1. Objeto da Contratação
-
-O presente Termo de Referência (TR) tem por objeto a contratação de serviços e soluções de Inteligência Artificial da Xertica.ai, com o foco em **{problem.lower()}** e com o objetivo de **{objective.lower()}**, por meio da implementação dos aceleradores Xertica.ai.
-
-## 2. Especificações Técnicas Detalhadas das Soluções
-
-A solução compreenderá a disponibilização, customização e suporte dos seguintes aceleradores Xertica.ai, detalhados em suas características técnicas e benefícios esperados:
-
-{chr(10).join(accelerator_benefits_summary)}
-
-## 3. Regime de Execução
-
-A execução do objeto do contrato se dará conforme o regime de **{contracting_model}**.
-
-## 4. Condições e Prazos de Execução
-
-Os prazos para o fornecimento, implantação e operação das soluções Xertica.ai são de **{context_data.get('prazosEstimados')}**. Detalhes específicos de marcos e entregas serão definidos no plano de trabalho anexo ao contrato.
-
-## 5. Propostas e Anexos
-
-São partes integrantes e complementares deste Termo de Referência as propostas submetidas pela Xertica.ai:
-- **Proposta Comercial:** Conforme documento PDF anexado ao processo.
-- **Proposta Técnica:** Conforme documento PDF anexado ao processo.
-
-"""
-    
-    # O LLM retornaria um JSON como este
-    return {
-        "subject": f"ETP e TR - {titulo_projeto} - {orgao_nome}",
-        "etp_content": etp_content,
-        "tr_content": tr_content
-    }
-
-# --- Endpoint FastAPI ---
+# --- Endpoint Principal da API ---
 
 @app.post("/generate_etp_tr")
 async def generate_etp_tr_endpoint(
@@ -285,12 +330,11 @@ async def generate_etp_tr_endpoint(
     propostaComercialFile: Optional[UploadFile] = File(None),
     propostaTecnicaFile: Optional[UploadFile] = File(None)
 ):
-    logger.info(f"Requisição recebida para {tituloProjeto} de {orgaoSolicitante}.")
+    logger.info(f"Requisição para '{tituloProjeto}' de '{orgaoSolicitante}' recebida.")
 
-    # Coletar todos os dados do formulário
-    # getlist para campos de múltiplos valores (como select multiple)
+    # 1. Coletar e Unificar Dados do Formulário
     form_data = await request.form()
-    produtosXertica_list = form_data.getlist("produtosXertica")
+    produtosXertica_list = form_data.getlist("produtosXertica") # Obtém a lista de produtos selecionados
 
     llm_context_data = {
         "orgaoSolicitante": orgaoSolicitante,
@@ -306,79 +350,68 @@ async def generate_etp_tr_endpoint(
         "produtosXertica": produtosXertica_list,
     }
 
-    # Adicionar os campos dinâmicos "integracao_[produto]"
+    # Adicionar os campos dinâmicos "integracao_[produto]" do formulário
     for key in form_data.keys():
         if key.startswith("integracao_"):
             llm_context_data[key] = form_data.get(key)
     
-    # --- Processar e Unificar Conteúdo de Propostas PDF ---
+    # 2. Processar e Unificar Conteúdo de Propostas PDF e Upload no GCS
+    # Extrair texto do PDF e salvar o arquivo no GCS (retornando URL).
+    # O texto extraído será usado pelo LLM.
     if propostaComercialFile and propostaComercialFile.filename:
-        # Em um cenário real, você faria await extract_text_from_pdf(propostaComercialFile)
-        # e passaria o texto extraído para o LLM.
-        # Por enquanto, mantemos o upload para GCS e um conteúdo simulado.
         llm_context_data["proposta_comercial_content"] = await extract_text_from_pdf(propostaComercialFile)
-        commercial_proposal_gcs_url = await upload_file_to_gcs(
+        llm_context_data["commercial_proposal_gcs_url"] = await upload_file_to_gcs(
             propostaComercialFile,
             f"propostas/{orgaoSolicitante}_{tituloProjeto}_comercial_{propostaComercialFile.filename}"
         )
-        llm_context_data["commercial_proposal_gcs_url"] = commercial_proposal_gcs_url
     else:
         llm_context_data["proposta_comercial_content"] = "Nenhuma proposta comercial PDF fornecida."
+        llm_context_data["commercial_proposal_gcs_url"] = None
 
     if propostaTecnicaFile and propostaTecnicaFile.filename:
-        # Similarmente, extrair texto e passar para o LLM.
         llm_context_data["proposta_tecnica_content"] = await extract_text_from_pdf(propostaTecnicaFile)
-        technical_proposal_gcs_url = await upload_file_to_gcs(
+        llm_context_data["technical_proposal_gcs_url"] = await upload_file_to_gcs(
             propostaTecnicaFile,
             f"propostas/{orgaoSolicitante}_{tituloProjeto}_tecnica_{propostaTecnicaFile.filename}"
         )
-        llm_context_data["technical_proposal_gcs_url"] = technical_proposal_gcs_url
     else:
         llm_context_data["proposta_tecnica_content"] = "Nenhuma proposta técnica PDF fornecida."
+        llm_context_data["technical_proposal_gcs_url"] = None
 
-    # --- Acrescentar Conhecimento do GCS para o LLM ----
-    # Estes são os 'context_data' que o LLM usará para buscar informações e gerar conteúdo.
-    # A estrutura de pastas parece ser: "{NomeAcelerador}/BC - {NomeAcelerador}.txt"
-    # Ajuste os caminhos conforme a estrutura real do seu bucket.
+    # 3. Acrescentar Conhecimento do GCS para o LLM
+    # Buscar e injetar conteúdos de arquivos TXT de Battle Cards, Data Sheets, Operational Plans
+    # e documentos legais/contextuais.
     
+    # Adicionar conteúdo de aceleradores Xertica do GCS
     for product_name in produtosXertica_list:
-        # É importante ter os nomes de arquivos padronizados no seu bucket para facilitar
         bc_path = f"{product_name}/BC - {product_name}.txt"
         ds_path = f"{product_name}/DS - {product_name}.txt"
         op_path = f"{product_name}/OP - {product_name}.txt"
         
-        # O LLM 'lê' estes conteúdos injetados no prompt
-        if get_gcs_file_content(bc_path):
-            llm_context_data[f"{product_name}_BC.txt"] = get_gcs_file_content(bc_path)
-        if get_gcs_file_content(ds_path):
-            llm_context_data[f"{product_name}_DS.txt"] = get_gcs_file_content(ds_path)
-        if get_gcs_file_content(op_path):
-            llm_context_data[f"{product_name}_OP.txt"] = get_gcs_file_content(op_path)
+        # Carrega o conteúdo e o adiciona ao contexto do LLM
+        if get_gcs_file_content(bc_path): llm_context_data[f"{product_name}_BC_GCS"] = get_gcs_file_content(bc_path)
+        if get_gcs_file_content(ds_path): llm_context_data[f"{product_name}_DS_GCS"] = get_gcs_file_content(ds_path)
+        if get_gcs_file_content(op_path): llm_context_data[f"{product_name}_OP_GCS"] = get_gcs_file_content(op_path)
 
-    # Documentos legais/contratuais de referência
+    # Adicionar documentos legais/contratuais de referência do GCS
     llm_context_data["MTI_CONTRATO_EXEMPLO.txt"] = get_gcs_file_content("Formas ágeis de contratação/MTI/CONTRATO DE PARCERIA 03-2024-MTI - XERTICA - ASSINADO.txt")
     llm_context_data["MPAP_ATA_EXEMPLO.txt"] = get_gcs_file_content("Formas ágeis de contratação/MPAP/ATA DE REGISTRO DE PREÇOS Nº 041-2024-XERTICA.txt")
     llm_context_data["RISK_ANALYSIS_CONTEXT.txt"] = get_gcs_file_content("Detecção e Análise de Riscos/Detecção de análise de riscos.txt")
 
-    # --- Chamada ao LLM para Geração de Conteúdo ---
-    llm_response = simulate_llm_response(
-        "Gerar ETP e TR detalhados com base nas informações fornecidas e no contexto Xertica.ai.",
-        llm_context_data
-    )
+    # 4. Chamar o LLM para Geração de Conteúdo
+    llm_response = await generate_etp_tr_content_with_gemini(llm_context_data)
     
-    document_subject = llm_response.get("subject", "Documento ETP/TR Gerado pela Xertica.ai")
-    etp_content = llm_response.get("etp_content", "Conteúdo do ETP não gerado pelo LLM.")
-    tr_content = llm_response.get("tr_content", "Conteúdo do TR não gerado pelo LLM.")
+    document_subject = llm_response.get("subject", f"Documento ETP/TR: {orgaoSolicitante} - {tituloProjeto}")
+    etp_content = llm_response.get("etp_content", "Conteúdo do ETP não gerado pelo LLM ou com erro.")
+    tr_content = llm_response.get("tr_content", "Conteúdo do TR não gerado pelo LLM ou com erro.")
 
-    # --- Autenticação e Construção do Google Docs ---
+    # 5. Autenticação e Criação do Google Docs
     docs_service, drive_service = authenticate_google_docs_and_drive()
-    if not docs_service or not drive_service:
-        raise HTTPException(status_code=500, detail="Serviços do Google Docs/Drive não puderam ser inicializados.")
 
     try:
         # CRIAÇÃO DO DOCUMENTO UNIFICADO NO GOOGLE DOCS
         new_doc_body = {
-            'title': f"{document_subject} - {orgaoSolicitante}",
+            'title': document_subject,
             'mimeType': 'application/vnd.google-apps.document'
         }
         new_doc_metadata = docs_service.documents().create(body=new_doc_body).execute()
@@ -388,31 +421,24 @@ async def generate_etp_tr_endpoint(
             raise HTTPException(status_code=500, detail="Falha ao criar novo documento no Google Docs.")
         logger.info(f"Documento único criado: {document_id}")
 
-        # Inserir o conteúdo completo do ETP e TR no documento
-        # IMPORTANTE: Considerar usar um TEMPLATE DO GOOGLE DOCS para formatar melhor
-        # Ex: substituir placeholders como {{ETP_CONTENT}}, {{TR_CONTENT}}
-        # requests = [
-        #     {'replaceAllText': {'replaceText': etp_content, 'containsText': {'text': '{{ETP_CONTENT}}'}}},
-        #     {'replaceAllText': {'replaceText': tr_content, 'containsText': {'text': '{{TR_CONTENT}}'}}},
-        # ] # Se usar template
-        
-        full_document_text = f"{etp_content}\n\n---\n\n{tr_content}" # Conteúdo direto
+        # Inserir o conteúdo completo do ETP e TR no documento.
+        # Conteúdo em Markdown será inserido como texto puro.
+        full_document_text = f"{etp_content}\n\n---\n\n{tr_content}" 
         requests = [
             {
                 'insertText': {
-                    'location': { 'index': 1 }, # Insere no início
+                    'location': { 'index': 1 }, # No início do documento
                     'text': full_document_text
                 }
             }
         ]
-        
         docs_service.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
         logger.info(f"Conteúdo ETP/TR inserido no documento {document_id}.")
 
-        # --- Definir Permissão de Leitura Pública e Obter Link ---
+        # 6. Definir Permissão de Leitura Pública e Obter Link
         permission = {
-            'type': 'anyone',
-            'role': 'reader'
+            'type': 'anyone', # Acesso público
+            'role': 'reader'  # Permissão de leitura
         }
         drive_service.permissions().create(fileId=document_id, body=permission, fields='id').execute()
         logger.info(f"Permissões de leitura pública definidas para {document_id}.")
@@ -436,12 +462,13 @@ async def generate_etp_tr_endpoint(
         logger.exception(f"Erro na API do Google Docs/Drive: {error_details}")
         raise HTTPException(status_code=e.resp.status, detail=f"Erro na API do Google Docs/Drive: {error_details}")
     except Exception as e:
-        logger.exception(f"Erro inesperado no servidor.")
+        logger.exception(f"Erro na geração do documento.")
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno: {e}")
 
 # Para executar localmente para testes (descomente para usar):
 # if __name__ == "__main__":
 #     import uvicorn
-#     # Certifique-se de configurar as variáveis de ambiente em um arquivo .env na raiz do projeto
-#     # E/ou configure suas credenciais ADC (Application Default Credentials) localmente via 'gcloud auth application-default login'
+#     # Configure as variáveis de ambiente em um arquivo .env na raiz do projeto
+#     # Ex: GCP_PROJECT_ID="seu-projeto-gcp", GCP_PROJECT_LOCATION="us-central1", GCS_BUCKET_NAME="seu-bucket-gcs"
+#     # Ou configure suas credenciais ADC localmente via 'gcloud auth application-default login'
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
