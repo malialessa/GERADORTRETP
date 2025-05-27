@@ -1,0 +1,8 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+google-cloud-storage==2.11.0
+google-auth-oauthlib==1.1.0
+google-api-python-client==2.127.0
+pydantic==2.7.2
+python-dotenv==1.0.0
+google-cloud-aiplatform # <<< ADICIONADO: SDK para usar Vertex AI (Gemini)
