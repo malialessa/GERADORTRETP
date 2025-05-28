@@ -305,10 +305,19 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
     for product_key, content in llm_context_data.get('gcs_accelerator_content', {}).items():
         if content:
             product_name_parts = product_key.split('_')
-            product_name = product_name_parts[0] if product_name_parts else product_key
-            doc_type = product_name_parts[1] if len(product_name_parts) > 1 else "Info"
-            doc_type_name = {"BC": "Battle Card", "DS": "Data Sheet", "OP": "Plano Operacional (Operational Plan)"}.get(doc_type, doc_type)
-            gcs_accel_str_parts.append(f"Conteúdo GCS - Acelerador {product_name} ({doc_type_name}):\n{content}\n---\n")
+            product_name = product_name_parts[0] if product_name_parts else product_key # Nome do produto antes do primeiro '_'
+            # Tenta pegar o tipo do documento (BC, DS, OP, OP_GCP, etc.)
+            doc_type_suffix = '_'.join(product_name_parts[1:]) if len(product_name_parts) > 1 else "Info"
+            
+            doc_type_name = "Informação Adicional"
+            if "BC" in doc_type_suffix: doc_type_name = "Battle Card"
+            elif "DS" in doc_type_suffix: doc_type_name = "Data Sheet"
+            elif "OP_GCP" in doc_type_suffix: doc_type_name = "Plano Operacional (GCP)"
+            elif "OP_GMP" in doc_type_suffix: doc_type_name = "Plano Operacional (GMP)"
+            elif "OP_GWS" in doc_type_suffix: doc_type_name = "Plano Operacional (GWS)"
+            elif "OP" in doc_type_suffix: doc_type_name = "Plano Operacional"
+
+            gcs_accel_str_parts.append(f"Conteúdo GCS - Acelerador {product_name.replace('_', ' ')} ({doc_type_name}):\n{content}\n---\n")
     gcs_accel_str = "\n".join(gcs_accel_str_parts) if gcs_accel_str_parts else "Nenhum conteúdo de acelerador do GCS fornecido.\n"
 
     gcs_legal_str_parts = []
@@ -347,24 +356,26 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
 
 
     accelerator_details_prompt_list = []
-    produtos_selecionados = llm_context_data.get("produtosXertica", [])
-    for product_name in produtos_selecionados:
-        # Chave de integração normalizada como no endpoint
-        integration_key = f"integracao_{product_name.replace(' ', '_').replace('.', '_')}"
+    # produtos_selecionados contém os nomes normalizados (ex: "Meet_Transcriber")
+    produtos_selecionados_normalizados = llm_context_data.get("produtosXertica", [])
+    
+    for product_name_normalized in produtos_selecionados_normalizados:
+        # O nome original é usado para display e para construir chaves para o LLM se o prompt espera o nome original.
+        product_name_original = product_name_normalized.replace('_', ' ') 
+
+        integration_key = f"integracao_{product_name_normalized}" # Chave de integração usa nome normalizado
         user_integration_detail = llm_context_data.get(integration_key, "").strip()
         
-        # Chaves para conteúdo GCS, normalizadas como no endpoint
-        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_BC", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_BC_GCS", "Dados do Battle Card não disponíveis.")) # Fallback para _BC_GCS
-        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS_GCS", "Dados do Data Sheet não disponíveis."))
+        # Chaves para conteúdo GCS usam o nome original do produto, conforme lógica de busca no endpoint
+        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_BC", "Dados do Battle Card não disponíveis.")
+        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_DS", "Dados do Data Sheet não disponíveis.")
         
-        # CORREÇÃO APLICADA AQUI:
-        op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GCP", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GMP", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GWS", 
-                                "Dados do Plano Operacional não disponíveis"))))
+        # Para OP, precisamos verificar os sufixos específicos (GCP, GMP, GWS) ou o genérico
+        op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_OP_GCP",
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_OP_GMP",
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_OP_GWS",
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original}_OP", 
+                                "Dados do Plano Operacional não disponíveis."))))
 
 
         bc_summary = bc_content_prod_raw[:min(1000, len(bc_content_prod_raw))] + ("..." if len(bc_content_prod_raw) > 1000 else "")
@@ -372,11 +383,11 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
         op_summary = op_content_prod_raw[:min(1000, len(op_content_prod_raw))] + ("..." if len(op_content_prod_raw) > 1000 else "")
 
         accelerator_details_prompt_list.append(f"""
-    - **Acelerador:** {product_name}
+    - **Acelerador:** {product_name_original} 
       - **Resumo do Battle Card (GCS):** {bc_summary}
       - **Detalhes do Data Sheet (GCS):** {ds_summary}
       - **Detalhes do Plano Operacional (GCS):** {op_summary}
-      - **Aplicação Específica no Órgão (Input do Usuário):** {user_integration_detail if user_integration_detail else 'Nenhum detalhe de integração fornecido. O LLM deve inferir a aplicação com base no problema/solução, nos documentos do acelerador e no contexto Xertica.ai'}
+      - **Aplicação Específica no Órgão (Input do Usuário para {product_name_original}):** {user_integration_detail if user_integration_detail else 'Nenhum detalhe de integração fornecido. O LLM deve inferir a aplicação com base no problema/solução, nos documentos do acelerador e no contexto Xertica.ai'}
         """)
     
     accelerator_details_prompt_section = "\n".join(accelerator_details_prompt_list) if accelerator_details_prompt_list else "Nenhum acelerador Xertica.ai selecionado ou detalhes não fornecidos."
@@ -398,6 +409,10 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
 """[1:]
 
     price_map_to_use_template = price_map_federal_template if esfera_administrativa == "Federal" else price_map_estadual_municipal_template
+    
+    # Recria a lista de nomes originais dos produtos para o placeholder {{sumario_aceleradores}} e {{descricao_solucao_etp}}
+    produtos_originais_display = [name_norm.replace('_', ' ') for name_norm in produtos_selecionados_normalizados]
+
 
     llm_prompt_content_final = f"""
 Você é um assistente de IA altamente especializado em elaboração de documentos técnicos e legais para o setor público brasileiro (esferas Federal, Estadual e Municipal), com expertise em licitações (Lei nº 14.133/2021, Lei 13.303/2016 e outras regulamentações específicas, como o Decreto Estadual 21.872/2023 se aplicável), e nas soluções de Inteligência Artificial da Xertica.ai.
@@ -449,8 +464,11 @@ CONTEÚDO DE CONTEXTO GCS (Battle Cards, Data Sheets, OP, Documentos Legais):
 {gcs_accel_str}
 {gcs_legal_str}
 
+DETALHES DOS ACELERADORES (Input do Usuário e Contexto GCS):
+{accelerator_details_prompt_section}
+
 Mapeamento de Placeholders para Preenchimento (Para o LLM):
-{{sumario_aceleradores}}: Resumo dos aceleradores selecionados.
+{{sumario_aceleradores}}: Resumo dos aceleradores selecionados ({', '.join(produtos_originais_display) if produtos_originais_display else 'Nenhum acelerador especificado'}).
 {{processo_administrativo_numero}}: Processo administrativo (genérico ou do contexto, ex: XXXXXX/{ano_atual}).
 {{local_etp_full}}: Onde local_etp_full foi definido ("{local_etp_full}").
 {{mes_extenso}}: Mês atual por extenso ({mes_extenso}).
@@ -464,7 +482,7 @@ Mapeamento de Placeholders para Preenchimento (Para o LLM):
 {{estimativa_demanda}}: Estima demanda com base na `{justificativa_necessidade}` e `{objetivo_geral}`.
 {{mapa_comparativo_custos}}: Tabela e texto justificando a estimativa de custos (LLM DEVE PREENCHER A TABELA COM VALORES).
 {{valor_estimado_total_etp}}: Valor final e justificativa. Se `valorEstimado` foi fornecido ({valor_estimado_input}), usar como base. Senão, o LLM estima.
-{{descricao_solucao_etp}}: Descrição da solução, baseada nos aceleradores e `proposta_tecnica_content`.
+{{descricao_solucao_etp}}: Descrição da solução, baseada nos aceleradores ({', '.join(produtos_originais_display) if produtos_originais_display else 'Nenhum acelerador especificado'}) e `proposta_tecnica_content`.
 {{parcelamento_justificativa}}: Justificativa para parcelamento (`{parcelamento_contratacao}`, `{justificativa_parcelamento}`).
 {{providencias_tomadas}}: Lista de providências (genéricas).
 {{declaracao_viabilidade}}: Declaração de viabilidade.
@@ -510,20 +528,20 @@ Nome do Responsável: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]**
 Matrícula: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]**
 
 ## Introdução
-{{introducao_etp}}
+{{{{introducao_etp}}}}
 O Estudo Técnico Preliminar – ETP é o documento constitutivo da primeira etapa do planejamento de uma contratação, que caracteriza o interesse público envolvido e a sua melhor solução. Ele serve de base ao Termo de Referência a ser elaborado, caso se conclua pela viabilidade da contratação.
 
 O ETP tem por objetivo identificar e analisar os cenários para o atendimento de demanda registrada no Documento de Formalização da Demanda – DFD, bem como demonstrar a viabilidade técnica e econômica das soluções identificadas, fornecendo as informações necessárias para subsidiar a tomada de decisão e o prosseguimento do respectivo processo de contratação.
 {contexto_geral_orgao if contexto_geral_orgao else f"A {orgao_nome}, em sua missão de modernizar a gestão pública e aprimorar a prestação de serviços ao cidadão, busca constantemente soluções inovadoras que garantam eficiência, transparência e segurança."}
 
-Referência: Inciso XI, do art. 2º e art. 11 da IN SGD/ME nº 94/2022. {{referencia_in_sgd_me}}
+Referência: Inciso XI, do art. 2º e art. 11 da IN SGD/ME nº 94/2022. {{{{referencia_in_sgd_me}}}}
 
 ## Descrição do problema e das necessidade
-{{problema_necessidade}}
+{{{{problema_necessidade}}}}
 A {orgao_nome} busca, por meio da iniciativa '{titulo_projeto}', endereçar um desafio crítico identificado: {justificativa_necessidade}. Este problema impede [descrever impacto negativo, ex: a eficiente prestação de serviços, a tomada de decisões ágeis, a otimização de recursos].
 
 ## Necessidades do negócio
-{{necessidades_negocio}}
+{{{{necessidades_negocio}}}}
 A contratação visa suprir as seguintes necessidades do negócio do {orgao_nome}, com impactos diretos na eficiência operacional e na entrega de serviços:
 - **Redução de gargalos operacionais:** Eliminar pontos de lentidão e ineficiência nos processos atuais, permitindo um fluxo de trabalho mais dinâmico.
 - **Melhoria da experiência do cidadão e do usuário interno:** Proporcionar canais de comunicação e acesso a serviços mais intuitivos, rápidos e satisfatórios, elevando os índices de aprovação.
@@ -532,7 +550,7 @@ A contratação visa suprir as seguintes necessidades do negócio do {orgao_nome
 - **Garantia de conformidade e transparência:** Assegurar que as operações estejam em total alinhamento com a legislação vigente e com os princípios de publicidade, promovendo a confiança e a integridade.
 
 ## Requisitos da Contratação
-{{requisitos_tecnicos_funcionais}}
+{{{{requisitos_tecnicos_funcionais}}}}
 Os requisitos gerais e específicos para a contratação da solução proposta são:
 - **Requisitos Funcionais:** A solução deve ser capaz de {objetivo_geral}, atuando de forma a [descrever como as funcionalidades chaves da solução Xertica.ai se conectam ao objetivo].
 - **Requisitos Não Funcionais:**
@@ -544,37 +562,37 @@ Os requisitos gerais e específicos para a contratação da solução proposta s
 - **Aderência Tecnológica:** A solução deve estar alinhada com as especificações detalhadas na proposta técnica da Xertica.ai, que aborda aspectos de arquitetura, stack tecnológica e compatibilidade.
 
 ## Levantamento de mercado
-{{levantamento_mercado}}
+{{{{levantamento_mercado}}}}
 O levantamento de mercado demonstrou que a contratação de soluções de Inteligência Artificial para otimização de processos e atendimento é uma tendência consolidada no setor público e privado. Diversas empresas oferecem ferramentas com capacidades variadas, mas a Xertica.ai se destaca por sua notória especialização em projetos para o setor público brasileiro. Possui um portfólio de aceleradores de IA focados em demandas governamentais e uma vivência comprovada em implementações complexas como [CITE EXEMPLOS COMO CASO PROCERGS, MPRS, TJES, se relevante ou invente um se não houver].
 
 A análise de mercado evidenciou que a Xertica.ai oferece um diferencial competitivo significativo em termos de integração nativa com o Google Cloud Platform (se aplicável), agilidade na implantação via aceleradores e uma compreensão aprofundada das particularidades legais e operacionais da administração pública. Este diferencial garante não apenas a aderência técnica, mas também a segurança jurídica e a eficiência na entrega da solução, superando alternativas que poderiam apresentar custos ocultos com adaptação ou risco de não conformidade.
 
 ## Estimativa de demanda - quantidade de bens e serviços
-{{estimativa_demanda}}
+{{{{estimativa_demanda}}}}
 A estimativa de demanda para os serviços/bens objeto desta contratação será:
 - Quantitativos: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, com base em volume esperado de usuários, transações ou dados]**. Serão definidos em detalhe no Termo de Referência com base na análise do volume de [descrever a base da estimativa, ex: interações atuais, projeção de crescimento] e na capacidade de processamento dos aceleradores da Xertica.ai. Esta projeção levará em conta [aspectos como: número de servidores, volume de documentos a processar, interações esperadas com a ferramenta de IA] para garantir o dimensionamento adequado da infraestrutura e licenciamento.
 
 ## Mapa comparativo dos custos
-{{mapa_comparativo_custos}}
+{{{{mapa_comparativo_custos}}}}
 O mapa comparativo de custos detalhado está disponível na Proposta Comercial da Xertica.ai e foi ratificado por cuidadosa pesquisa de mercado e comparação com contratos similares. A análise não se restringiu apenas ao menor preço, mas considerou o Custo Total de Propriedade (TCO), o Retorno sobre Investimento (ROI) estimado, os custos de implementação, treinamento, suporte contínuo e a capacidade de inovação futura. O valor estimado foi ratificado por [CITE FONTES DE PESQUISA, PUBLICAÇÕES OU DISPENSA/INEXIGIBILIDADE SE PUDER OU DEIXE EM ABERTO]:
 
 {price_map_to_use_template}
 
 ## Estimativa de custo total da contratação
-{{valor_estimado_total_etp}}
+{{{{valor_estimado_total_etp}}}}
 O valor estimado global para esta contratação, considerando todas as fases de implementação, licenciamento e suporte para o período de {prazos_estimados}, é de **R$ {valor_estimado_input if valor_estimado_input is not None else '[A SER ESTIMADO PELO LLM E PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, considerando o tempo de permanência da solução]'}**. Este valor reflete a complexidade da solução, a especialização exigida e a garantia de resultados alinhados aos objetivos do {orgao_nome}.
 
 ## Descrição da solução como um todo
-{{descricao_solucao_etp}}
-A solução proposta abrange a implementação dos aceleradores de Inteligência Artificial da Xertica.ai, com foco em {', '.join(produtos_selecionados) if produtos_selecionados else '[LISTAR ACELERADORES SELECIONADOS]'}, que em conjunto formam uma plataforma integrada para [descrever o propósito geral da plataforma]. Esta solução é projetada para otimizar [mencionar processos específicos], usando [mencionar tecnologias chave da Xertica.ai, ex: processamento de linguagem natural, machine learning, visão computacional] para alcançar [mencionar benefícios específicos, ex: autonomia na análise de documentos, atendimento escalável, insights preditivos]. A proposta técnica da Xertica.ai (anexada) detalha a arquitetura, os componentes, os fluxos de trabalho e os serviços de implementação e suporte contínuo da solução, assegurando a aderência às necessidades do {orgao_nome}.
+{{{{descricao_solucao_etp}}}}
+A solução proposta abrange a implementação dos aceleradores de Inteligência Artificial da Xertica.ai, com foco em {', '.join(produtos_originais_display) if produtos_originais_display else '[LISTAR ACELERADORES SELECIONADOS]'}, que em conjunto formam uma plataforma integrada para [descrever o propósito geral da plataforma]. Esta solução é projetada para otimizar [mencionar processos específicos], usando [mencionar tecnologias chave da Xertica.ai, ex: processamento de linguagem natural, machine learning, visão computacional] para alcançar [mencionar benefícios específicos, ex: autonomia na análise de documentos, atendimento escalável, insights preditivos]. A proposta técnica da Xertica.ai (anexada) detalha a arquitetura, os componentes, os fluxos de trabalho e os serviços de implementação e suporte contínuo da solução, assegurando a aderência às necessidades do {orgao_nome}.
 
 ## Justificativa do parcelamento ou não da contratação
-{{parcelamento_justificativa}}
+{{{{parcelamento_justificativa}}}}
 **Decisão sobre Parcelamento:** {parcelamento_contratacao}.
 **Justificativa:** {justificativa_parcelamento if parcelamento_contratacao == 'Justificar' and justificativa_parcelamento else f"A decisão por {('parcelar' if parcelamento_contratacao == 'Sim' else 'não parcelar')} a contratação foi embasada na busca por {('maior flexibilidade na gestão e adaptação do projeto por fases, permitindo entregas incrementais e avaliação contínua dos resultados. Isso mitiga riscos e permite o aprimoramento progressivo da solução, além de otimizar a gestão orçamentária.' if parcelamento_contratacao == 'Sim' else 'garantir a integralidade da solução e a sinergia entre seus componentes, otimizando o processo de implementação e a entrega de resultados completos. O não parcelamento minimiza a fragmentação de responsabilidades, assegura a interoperabilidade plena e acelera o tempo de valor da solução para o órgão.')}."}
 
 ## Providências a serem tomadas
-{{providencias_tomadas}}
+{{{{providencias_tomadas}}}}
 As providências a serem tomadas para a plena execução da contratação incluem:
 1.  Formalização do processo de contratação e assinatura do contrato.
 2.  Definição de cronograma detalhado de implantação e plano de projeto conjunto.
@@ -585,11 +603,11 @@ As providências a serem tomadas para a plena execução da contratação inclue
 7.  Acompanhamento contínuo da performance da solução e realização de ajustes finos e otimizações.
 
 ## Declaração de viabilidade
-{{declaracao_viabilidade}}
+{{{{declaracao_viabilidade}}}}
 Após a análise técnica e econômica preliminar, conjugada com a expertise da Xertica.ai no setor público e a aderência da solução aos objetivos estratégicos do {orgao_nome}, declara-se a **viabilidade plena** da contratação da solução Xertica.ai. A proposta demonstra ser a mais adequada, tecnológica, juridicamente sólida e economicamente vantajosa, alinhada às políticas e estratégias de modernização do {orgao_nome}, prometendo um retorno significativo sobre o investimento em termos de eficiência e qualidade dos serviços.
 
 ## Responsáveis
-{{nomes_cargos_responsaveis}}
+{{{{nomes_cargos_responsaveis}}}}
 A Equipe de Planejamento da Contratação foi instituída pela Portaria nº **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]** (ou outro instrumento equivalente de formalização), de {today.day} de {mes_extenso} de {ano_atual}.
 Conforme o § 2º do Art. 11 da IN SGD/ME nº 94, de 2022, o Estudo Técnico Preliminar deverá ser aprovado e assinado pelos Integrantes Técnicos e Requisitantes e pela autoridade máxima da área de TIC.
 
@@ -601,19 +619,19 @@ Matrícula/SIAPE: **[Matrícula/SIAPE]** Matrícula/SIAPE: **[Matrícula/SIAPE]*
 ## Aprovação e declaração de conformidade
 Aprovo este Estudo Técnico Preliminar e atesto sua conformidade às disposições da Instrução Normativa SGD/ME nº 94, de 23 de dezembro de 2022.
 
-{local_etp_full} {{local_data_aprovacao}}
+{local_etp_full} {{{{local_data_aprovacao}}}}
 <NEWPAGE>
 MODELO DE TR PARA PREENCHIMENTO (Siga esta estrutura rigorosamente):
 # Termo de Referência – Nº [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
 
 ## 1 – DEFINIÇÃO DO OBJETO
-{{sumario_aceleradores}}
-A presente contratação tem como objeto a aquisição e implantação de uma solução de [descrever o conjunto dos aceleradores Xertica.ai selecionados] por meio da implementação da tecnologia da Xertica.ai, com o objetivo de {objetivo_geral}, garantindo a modernização e a otimização dos serviços do {orgao_nome}, conforme condições e exigências estabelecidas neste instrumento.
+{{{{sumario_aceleradores}}}}
+A presente contratação tem como objeto a aquisição e implantação de uma solução de [descrever o conjunto dos aceleradores Xertica.ai selecionados: {', '.join(produtos_originais_display) if produtos_originais_display else 'Nenhum acelerador especificado'}] por meio da implementação da tecnologia da Xertica.ai, com o objetivo de {objetivo_geral}, garantindo a modernização e a otimização dos serviços do {orgao_nome}, conforme condições e exigências estabelecidas neste instrumento.
 
 1.1. Objeto Sintético: Contratação de serviços estratégicos de Tecnologia da Informação baseados em Inteligência Artificial, caracterizados como **[Bens e Serviços Comuns/Especiais – ESPECIFICAR AQUI COM BASE NA SOLUÇÃO, EX: SERVIÇOS TÉCNICOS ESPECIALIZADOS DE CONSULTORIA E DESENVOLVIMENTO DE IA]**, para atender às necessidades permanentes e contínuas de modernização da **Administração Pública {esfera_administrativa}**.
-* Ramo de Atividade predominante da contratação: {cnae_sugerido} - Consultoria em tecnologia da informação. O CNAE específico deverá ser confirmado e preenchido pelo órgão/administração.
+* Ramo de Atividade predominante da contratação: {{{{cnae_sugerido}}}} - Consultoria em tecnologia da informação. O CNAE específico deverá ser confirmado e preenchido pelo órgão/administração.
 * Quantitativos estimados: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - Ex: 1 licença base, 500 usuários, 1000 transações/mês]**. Serão definidos no contrato com base nas necessidades específicas e no dimensionamento da solução Xertica.ai que atenderá a demanda.
-* Prazo do contrato: O contrato terá vigência de **{prazo_vigencia_tr}**, contados a partir da assinatura, podendo ser prorrogado conforme a Lei nº 14.133/2021.
+* Prazo do contrato: O contrato terá vigência de **{{{{prazo_vigencia_tr}}}}**, contados a partir da assinatura, podendo ser prorrogado conforme a Lei nº 14.133/2021.
 
 ## 2 – FUNDAMENTAÇÃO DA CONTRATAÇÃO
 A Fundamentação da Contratação e de seus quantitativos encontra-se pormenorizada em tópico específico dos Estudos Técnicos Preliminares (ETP), anexo a este Termo de Referência.
@@ -628,7 +646,7 @@ A Fundamentação da Contratação e de seus quantitativos encontra-se pormenori
 2.3. Enquadramento da contratação: A contratação fundamenta-se no **{modelo_licitacao}** e nas demais normas legais e regulamentares atinentes à matéria, em plena observância à Lei nº 14.133, de 1º de abril de 2021 (Nova Lei de Licitações e Contratos Administrativos). [SE FOR INEXIGIBILIDADE OU DISPENSA, CITAR ARTIGOS ESPECÍFICOS DA LEI 14.133/2021, ex: Art. 74, inciso II para notória especialização, ou Art. 75 para dispensa].
 
 ## 3 – DESCRIÇÃO DA SOLUÇÃO COMO UM TODO
-A solução a ser contratada consiste na implementação e suporte dos aceleradores de Inteligência Artificial da Xertica.ai, com foco em {', '.join(produtos_selecionados) if produtos_selecionados else '[LISTAR ACELERADORES SELECIONADOS]'}, que se mostraram a alternativa mais vantajosa e completa para {objetivo_geral} no {orgao_nome}. Esta abordagem integrada garante a sinergia entre diferentes módulos e a entrega de um sistema coeso capaz de endereçar os desafios apresentados.
+A solução a ser contratada consiste na implementação e suporte dos aceleradores de Inteligência Artificial da Xertica.ai, com foco em {', '.join(produtos_originais_display) if produtos_originais_display else '[LISTAR ACELERADORES SELECIONADOS]'}, que se mostraram a alternativa mais vantajosa e completa para {objetivo_geral} no {orgao_nome}. Esta abordagem integrada garante a sinergia entre diferentes módulos e a entrega de um sistema coeso capaz de endereçar os desafios apresentados.
 
 3.1. O objeto da contratação compreende:
 * A disponibilização, instalação e configuração dos aceleradores Xertica.ai selecionados, conforme detalhado na Proposta Técnica.
@@ -657,9 +675,9 @@ Os requisitos necessários à contratação são essenciais para o atendimento d
 
 4.2. Da exigência de carta de solidariedade: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - (SIM/NÃO) e justificativa, conforme edital. Se aplicável, a Xertica.ai pode fornecer.]**.
 
-4.3. SUBCONTRATAÇÃO: {regras_subcontratacao} **Não será permitida a subcontratação de partes relevantes do objeto da contratação.** Apenas serviços pontuais e previamente autorizados pelo {orgao_nome} poderão ser subcontratados. (Ou: **Totalmente Permitida** ou **Condicionada à Aprovação** - preencher conforme o caso).
+4.3. SUBCONTRATAÇÃO: {{{{regras_subcontratacao}}}} **Não será permitida a subcontratação de partes relevantes do objeto da contratação.** Apenas serviços pontuais e previamente autorizados pelo {orgao_nome} poderão ser subcontratados. (Ou: **Totalmente Permitida** ou **Condicionada à Aprovação** - preencher conforme o caso).
 
-4.4. GARANTIA DA CONTRATAÇÃO: {regras_garantia} A CONTRATADA deverá oferecer garantia técnica mínima de **12 (doze) meses** sobre os serviços prestados e a solução implementada, contados a partir do recebimento definitivo do objeto. Esta garantia abrange correção de falhas e bom funcionamento da solução.
+4.4. GARANTIA DA CONTRATAÇÃO: {{{{regras_garantia}}}} A CONTRATADA deverá oferecer garantia técnica mínima de **12 (doze) meses** sobre os serviços prestados e a solução implementada, contados a partir do recebimento definitivo do objeto. Esta garantia abrange correção de falhas e bom funcionamento da solução.
 
 4.5. O Contratado deverá realizar a transição contratual com transferência de conhecimento, tecnologia e técnicas empregadas, assegurando a autonomia e capacidade do {orgao_nome} na operação e manutenção da solução a longo prazo.
 
@@ -672,14 +690,14 @@ A execução do objeto será realizada de forma indireta, com foco na entrega de
 
 5.2. Os serviços serão executados e as soluções disponibilizadas predominantemente de forma remota, com possibilidade de visitas técnicas presenciais, se necessário e acordado entre as partes.
 
-5.3. Deverão ser observados os métodos, rotinas e procedimentos de implementação e suporte definidos na Proposta Técnica da Xertica.ai, que seguirão as melhores práticas de gestão de projetos de TI. {metodologia_implementacao}
+5.3. Deverão ser observados os métodos, rotinas e procedimentos de implementação e suporte definidos na Proposta Técnica da Xertica.ai, que seguirão as melhores práticas de gestão de projetos de TI. {{{{metodologia_implementacao}}}}
 
 5.4. A CONTRATADA deverá disponibilizar todos os materiais, equipamentos, softwares e ferramentas necessárias para a perfeita execução dos serviços e funcionamento da solução.
 
 5.5. O prazo de garantia contratual dos serviços será de, no mínimo, **12 (doze) meses**, contado a partir do recebimento definitivo do objeto, conforme Art. 99 da Lei nº 14.133/2021.
 
 ## 6 – GESTÃO DO CONTRATO
-{gestao_contrato_tr}
+{{{{gestao_contrato_tr}}}}
 A gestão do contrato será realizada por um fiscal do {orgao_nome}, que será responsável por acompanhar a execução do objeto, verificar o cumprimento das obrigações e aprovar os pagamentos, conforme as normas aplicáveis.
 
 6.1. O contrato deverá ser executado fielmente pelas partes, de acordo com as cláusulas avençadas e as rigorosas normas da Lei nº 14.133, de 2021.
@@ -693,16 +711,16 @@ A gestão do contrato será realizada por um fiscal do {orgao_nome}, que será r
 ## 7 – MEDIÇÃO E PAGAMENTO
 A medição e pagamento serão realizados com base na entrega e no atingimento dos Acordos de Níveis de Serviço (ANS) ou Instrumentos de Medição de Resultados (IMR) associados à solução.
 
-7.1. A avaliação da execução do objeto utilizará o Instrumento de Medição de Resultado (IMR), conforme prescrições: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - metodologia e regras, ex: cumprimento de SLAs, disponibilidade da solução, satisfação do usuário, performance de processamento]**. {criterios_aceitacao_tr}
+7.1. A avaliação da execução do objeto utilizará o Instrumento de Medição de Resultado (IMR), conforme prescrições: **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - metodologia e regras, ex: cumprimento de SLAs, disponibilidade da solução, satisfação do usuário, performance de processamento]**. {{{{criterios_aceitacao_tr}}}}
 7.2. O valor devido a título de pagamento mensal à CONTRATADA será mensurado pelos indicadores do IMR, garantindo o alinhamento do pagamento à performance e aos resultados alcançados.
 7.3. O recebimento dos serviços será provisório e definitivo, conforme Art. 140 da Lei nº 14.133/2021, atestando a qualidade e a conformidade da entrega.
-7.4. Do Faturamento: A CONTRATADA deverá apresentar fatura ou nota fiscal no prazo de **{medicao_pagamento_dias_recebimento} (cinco) dias úteis** após comunicação formal do gestor do contrato sobre o ateste da medição, juntamente com as comprovações de regularidade fiscal e trabalhista.
-7.5. Das condições de pagamento: O pagamento será efetuado em **{medicao_pagamento_dias_pagamento} (quinze) dias corridos** após o atesto da Fatura/Nota Fiscal, condicionado à verificação de conformidade na prestação dos serviços. (Prazo para faturamento: {medicao_pagamento_dias_faturamento})
+7.4. Do Faturamento: A CONTRATADA deverá apresentar fatura ou nota fiscal no prazo de **{{{{medicao_pagamento_dias_recebimento}}}} (cinco) dias úteis** após comunicação formal do gestor do contrato sobre o ateste da medição, juntamente com as comprovações de regularidade fiscal e trabalhista.
+7.5. Das condições de pagamento: O pagamento será efetuado em **{{{{medicao_pagamento_dias_pagamento}}}} (quinze) dias corridos** após o atesto da Fatura/Nota Fiscal, condicionado à verificação de conformidade na prestação dos serviços. (Prazo para faturamento: {{{{medicao_pagamento_dias_faturamento}}}})
 
 ## 8 – SELEÇÃO DO FORNECEDOR
 A seleção do fornecedor será realizada conforme a modalidade de contratação definida, garantindo a lisura, a transparência e a adequação legal do processo.
 
-8.1. O fornecedor será selecionado por meio de **{modelo_licitacao}**, com adoção do critério de julgamento pelo **{criterio_julgamento_tr} [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - Ex: MENOR PREÇO, MELHOR TÉCNICA, MELHOR TÉCNICA E PREÇO, MAIOR RETORNO ECONÔMICO]**.
+8.1. O fornecedor será selecionado por meio de **{modelo_licitacao}**, com adoção do critério de julgamento pelo **{{{{criterio_julgamento_tr}}}} [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - Ex: MENOR PREÇO, MELHOR TÉCNICA, MELHOR TÉCNICA E PREÇO, MAIOR RETORNO ECONÔMICO]**.
 * **Exigências de Habilitação:** Serão observados os requisitos exigidos no Aviso de Contratação ou Edital, em conformidade com o Art. 62 a 70 da Lei nº 14.133/2021, abrangendo habilitação jurídica, qualificação técnica, qualificação econômico-financeira, regularidade fiscal e trabalhista e cumprimento do disposto no inciso XXXIII do art. 7º da Constituição Federal.
 
 ## 9 – ESTIMATIVA DO PREÇO
@@ -721,20 +739,20 @@ A adequação orçamentária para a presente contratação será assegurada pelo
 
 10.2. A dotação relativa aos exercícios financeiros subsequentes será indicada após aprovação da Lei Orçamentária respectiva e liberação dos créditos correspondentes, mediante apostilamento, conforme previsão legal.
 
-{anexos_tr}
+{{{{anexos_tr}}}}
 **Há anexos no pedido:** Sim (Proposta Comercial e Proposta Técnica da Xertica.ai, Battle Cards e Data Sheets dos aceleradores, e outros documentos de contexto legal).
 
-OBRIGAÇÕES DO CONTRATADO: {obrigações_contratado_tr}
-OBRIGAÇÕES DO ÓRGÃO: {obrigações_orgao_tr}
-SANÇÕES ADMINISTRATIVAS: {sancoes_administrativas_tr}
+OBRIGAÇÕES DO CONTRATADO: {{{{obrigações_contratado_tr}}}}
+OBRIGAÇÕES DO ÓRGÃO: {{{{obrigações_orgao_tr}}}}
+SANÇÕES ADMINISTRATIVAS: {{{{sancoes_administrativas_tr}}}}
 
 ---
 
 Gere o objeto JSON agora, seguindo todas as instruções e o formato especificado.
-Processo Administrativo (ETP): {processo_administrativo_numero}
-Processo Administrativo (TR): {numero_processo_administrativo_tr}
+Processo Administrativo (ETP): {{{{processo_administrativo_numero}}}}
+Processo Administrativo (TR): {{{{numero_processo_administrativo_tr}}}}
 Local e Data (ETP): {local_etp_full}
-Local e Data (TR): {cidade_uf_tr}, {data_tr}
+Local e Data (TR): {{{{cidade_uf_tr}}}}, {{{{data_tr}}}}
 """
 
     try:
@@ -813,8 +831,9 @@ async def generate_etp_tr_endpoint(
         raise HTTPException(status_code=503, detail="Serviço de Armazenamento (GCS) indisponível ou não configurado.")
 
     form_data = await request.form()
-    produtosXertica_list = form_data.getlist("produtosXertica")
-    logger.info(f"Produtos Xertica selecionados: {produtosXertica_list}")
+    # produtosXertica_list agora contém os nomes normalizados (ex: "Meet_Transcriber")
+    produtosXertica_list_normalized = form_data.getlist("produtosXertica")
+    logger.info(f"Produtos Xertica selecionados (normalizados): {produtosXertica_list_normalized}")
 
     llm_context_data = {
         "orgaoSolicitante": orgaoSolicitante,
@@ -827,18 +846,16 @@ async def generate_etp_tr_endpoint(
         "contextoGeralOrgao": contextoGeralOrgao if contextoGeralOrgao else "Não fornecido.",
         "valorEstimado": valorEstimado,
         "justificativaParcelamento": justificativaParcelamento if justificativaParcelamento else "Não fornecida.",
-        "produtosXertica": produtosXertica_list, # Lista de nomes normalizados do JS
+        "produtosXertica": produtosXertica_list_normalized, # Passa a lista de nomes normalizados
         "data_geracao_documento": date.today().strftime("%d/%m/%Y"),
     }
 
-    for product_name_form_normalized in produtosXertica_list: # product_name_form_normalized já é o valor normalizado do select
-        # A chave de integração já usa o nome normalizado que veio do form_data.getlist("produtosXertica")
-        # e que foi usado para gerar o 'name' do textarea no JS.
-        integration_key_expected_by_llm_prompt = f"integracao_{product_name_form_normalized}" # Chave que o prompt espera
-        
-        # O form_data já deve conter `integracao_NormalizedProductName` devido ao `name` do textarea no JS
-        llm_context_data[integration_key_expected_by_llm_prompt] = form_data.get(integration_key_expected_by_llm_prompt, f"Detalhes de integração para {product_name_form_normalized} não fornecidos.")
-        logger.info(f"Detalhe de integração para '{product_name_form_normalized}': {llm_context_data[integration_key_expected_by_llm_prompt]}")
+    # Coleta detalhes de integração para cada produto (usando o nome normalizado como chave)
+    for product_name_normalized in produtosXertica_list_normalized:
+        integration_key = f"integracao_{product_name_normalized}" # Chave esperada pelo prompt
+        # O FormData já deve conter `integracao_NormalizedProductName` se o 'name' do textarea no JS estiver correto.
+        llm_context_data[integration_key] = form_data.get(integration_key, f"Detalhes de integração para {product_name_normalized.replace('_', ' ')} não fornecidos.")
+        logger.info(f"Detalhe de integração para '{product_name_normalized.replace('_', ' ')}' (chave: {integration_key}): {llm_context_data[integration_key]}")
 
 
     # Processamento de arquivos PDF anexados
@@ -870,35 +887,14 @@ async def generate_etp_tr_endpoint(
     llm_context_data['gcs_accelerator_content'] = {}
     llm_context_data['gcs_legal_context_content'] = {}
 
-    # produtosXertica_list contém os valores normalizados das options (ex: "Meet_Transcriber")
-    # Precisamos do nome original para buscar os arquivos no GCS se a estrutura de pastas/arquivos usar o nome original.
-    # No entanto, o prompt espera as chaves com o nome original (ex: "Meet Transcriber_BC").
-    # Vamos assumir que a busca no GCS deve usar o nome original do produto se a estrutura for assim.
-    # Se a estrutura GCS usa nomes normalizados, então product_name_normalized (que é o mesmo que product_name_from_select) é o correto.
+    for product_name_normalized in produtosXertica_list_normalized:
+        # O nome original é usado para logs e para construir as chaves que o LLM espera no prompt (se o prompt usa nomes originais)
+        # E para buscar no GCS se a estrutura de pastas/arquivos usar o nome original.
+        product_original_name_for_display = product_name_normalized.replace('_', ' ')
 
-    # Mapeamento de valor normalizado para nome original (se necessário para GCS)
-    # Se a estrutura do GCS usa nomes normalizados, este mapa não é estritamente necessário para a busca,
-    # mas é útil para construir as chaves que o LLM espera (com o nome original).
-    # O JavaScript já envia os valores normalizados.
-    # O Python precisa saber o nome original para construir a chave como "Nome Original_BC" para o LLM.
-    # E para buscar no GCS, pode precisar do nome original ou normalizado dependendo da estrutura do bucket.
-
-    # Para simplificar, vamos assumir que o `product_name_from_select` (que é o valor normalizado)
-    # é o que usamos para construir as chaves para o LLM (ex: "Meet_Transcriber_BC")
-    # e que a estrutura do GCS também pode usar esses nomes normalizados ou os originais.
-    # A lógica atual já tenta caminhos com nome normalizado e original.
-
-    for product_name_normalized_from_select in produtosXertica_list:
-        # O product_name_normalized_from_select é o que veio do formulário (ex: "Meet_Transcriber")
-        # Para o LLM e para as chaves em `llm_context_data`, vamos usar este nome normalizado
-        # para consistência com as chaves de `integracao_...`
-        # Se o GCS usa nomes originais, a lógica de `get_gcs_file_content` precisaria de um mapeamento reverso.
-        # Por ora, vamos manter a lógica de busca como está, que tenta nomes normalizados e originais.
-        # A chave para o LLM será `product_name_normalized_from_select + "_BC"`, etc.
-
-        product_original_name_for_display = product_name_normalized_from_select.replace('_', ' ') # Para logs e talvez para chaves do LLM se o prompt espera o nome original
-
-        if "GCP" in product_original_name_for_display: # Usar o nome original para estes casos especiais
+        # Tratamento especial para GCP, GMP, GWS conforme instruído
+        # As chaves em gcs_accelerator_content devem usar o nome original para o LLM
+        if "GCP" in product_original_name_for_display:
             content_op_gcp = get_gcs_file_content(f"GCP/Análise_Técnica_Google_Cloud_Platform_.txt")
             if content_op_gcp: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_OP_GCP"] = content_op_gcp
             else: logger.warning(f"GCP analysis text not found at GCP/Análise_Técnica_Google_Cloud_Platform_.txt")
@@ -917,15 +913,18 @@ async def generate_etp_tr_endpoint(
             continue
         
         # Para os aceleradores padrão
-        # `product_name_normalized_from_select` é usado para a pasta
-        # `product_original_name_for_display` é usado para o nome do arquivo no caminho alternativo
-        bc_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/BC_{product_name_normalized_from_select}.txt"
-        ds_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/DS_{product_name_normalized_from_select}.txt"
-        op_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/OP_{product_name_normalized_from_select}.txt"
+        # `product_name_normalized` é usado para a pasta (se a estrutura GCS for assim)
+        # `product_original_name_for_display` é usado para o nome do arquivo no caminho alternativo e para a chave do LLM
         
-        bc_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/BC - {product_original_name_for_display}.txt"
-        ds_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/DS - {product_original_name_for_display}.txt"
-        op_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/OP - {product_original_name_for_display}.txt"
+        # Caminhos primários (com nome normalizado na pasta e no arquivo)
+        bc_path = f"aceleradores_conteudo/{product_name_normalized}/BC_{product_name_normalized}.txt"
+        ds_path = f"aceleradores_conteudo/{product_name_normalized}/DS_{product_name_normalized}.txt"
+        op_path = f"aceleradores_conteudo/{product_name_normalized}/OP_{product_name_normalized}.txt"
+        
+        # Caminhos alternativos (com nome normalizado na pasta e nome original no arquivo)
+        bc_path_alt = f"aceleradores_conteudo/{product_name_normalized}/BC - {product_original_name_for_display}.txt"
+        ds_path_alt = f"aceleradores_conteudo/{product_name_normalized}/DS - {product_original_name_for_display}.txt"
+        op_path_alt = f"aceleradores_conteudo/{product_name_normalized}/OP - {product_original_name_for_display}.txt"
         
         content_bc = get_gcs_file_content(bc_path) or get_gcs_file_content(bc_path_alt)
         content_ds = get_gcs_file_content(ds_path) or get_gcs_file_content(ds_path_alt)
@@ -955,6 +954,7 @@ async def generate_etp_tr_endpoint(
     
     # Geração de conteúdo com Gemini
     logger.info("Enviando dados de contexto para o LLM Gemini.")
+    logger.debug(f"Dados completos enviados ao LLM: {json.dumps(llm_context_data, indent=2, ensure_ascii=False)}") # Log detalhado
     llm_response = await generate_etp_tr_content_with_gemini(llm_context_data)
 
     document_subject = llm_response.get("subject", f"ETP e TR: {orgaoSolicitante} - {tituloProjeto} ({date.today().strftime('%Y-%m-%d')})")
