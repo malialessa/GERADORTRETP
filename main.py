@@ -283,41 +283,16 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
     logger.info("Iniciando chamada ao modelo Gemini para geração de ETP/TR.")
 
     gcs_accel_str_parts = []
-    # product_key_in_dict é a chave que foi armazenada em llm_context_data['gcs_accelerator_content']
-    # Ex: "Meet Transcriber_BC" ou "GCP_OP_GCP"
+    # Loop para construir a string de conteúdo de aceleradores GCS
     for product_key_in_dict, content in llm_context_data.get('gcs_accelerator_content', {}).items():
         if content:
-            # Tenta extrair o tipo de doc e o nome do produto da chave
-            doc_type_indicator = "Info" # Default
-            product_name_actual = product_key_in_dict # Default
+            # Extrai o tipo de documento (BC, DS, OP, OP_GCP, etc.) do final da chave
+            doc_type_match = re.search(r'_(BC|DS|OP|OP_GCP|OP_GMP|OP_GWS)$', product_key_in_dict)
+            doc_type_indicator = doc_type_match.group(1) if doc_type_match else "Unknown"
             
-            # Padrões para extrair o doc_type e o nome do produto da chave
-            match_bc = re.search(r'_(BC)$', product_key_in_dict)
-            match_ds = re.search(r'_(DS)$', product_key_in_dict)
-            match_op = re.search(r'_(OP)$', product_key_in_dict)
-            match_op_gcp = re.search(r'_(OP_GCP)$', product_key_in_dict)
-            match_op_gmp = re.search(r'_(OP_GMP)$', product_key_in_dict)
-            match_op_gws = re.search(r'_(OP_GWS)$', product_key_in_dict)
+            # Extrai o nome do produto (removendo o sufixo do tipo de documento)
+            product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1] if doc_type_match else product_key_in_dict
 
-            if match_op_gcp:
-                doc_type_indicator = match_op_gcp.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            elif match_op_gmp:
-                doc_type_indicator = match_op_gmp.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            elif match_op_gws:
-                doc_type_indicator = match_op_gws.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            elif match_bc:
-                doc_type_indicator = match_bc.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            elif match_ds:
-                doc_type_indicator = match_ds.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            elif match_op: # Se for apenas OP (genérico)
-                doc_type_indicator = match_op.group(1)
-                product_name_actual = product_key_in_dict[:-len(doc_type_indicator)-1]
-            
             doc_type_name = {
                 "BC": "Battle Card", 
                 "DS": "Data Sheet", 
@@ -336,55 +311,62 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
             gcs_legal_str_parts.append(f"Conteúdo GCS - Documento Legal/Contexto Adicional ({file_name}):\n{content}\n---\n")
     gcs_legal_str = "\n".join(gcs_legal_str_parts) if gcs_legal_str_parts else "Nenhum conteúdo legal/contextual do GCS fornecido.\n"
 
-    orgao_nome = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
-    titulo_projeto = llm_context_data.get('tituloProjeto', 'uma iniciativa')
-    justificativa_necessidade = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
-    objetivo_geral = llm_context_data.get('objetivoGeral', 'um objetivo ambicioso.')
-    prazos_estimados = llm_context_data.get('prazosEstimados', 'prazos a serem definidos.')
-    valor_estimado_input = llm_context_data.get('valorEstimado')
-    modelo_licitacao = llm_context_data.get('modeloLicitacao', 'uma modalidade padrão.')
-    parcelamento_contratacao = llm_context_data.get('parcelamentoContratacao', 'Não especificado.')
-    justificativa_parcelamento = llm_context_data.get('justificativaParcelamento', 'Não se aplica.')
-    contexto_geral_orgao = llm_context_data.get('contextoGeralOrgao', '')
+    # Prepara variáveis Python para injeção no prompt (para evitar f-string aninhadas)
+    orgao_nome_py = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
+    titulo_projeto_py = llm_context_data.get('tituloProjeto', 'uma iniciativa')
+    justificativa_necessidade_py = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
+    objetivo_geral_py = llm_context_data.get('objetivoGeral', 'um objetivo ambicioso.')
+    prazos_estimados_py = llm_context_data.get('prazosEstimados', 'prazos a serem definidos.')
+    valor_estimado_input_py = llm_context_data.get('valorEstimado')
+    modelo_licitacao_py = llm_context_data.get('modeloLicitacao', 'uma modalidade padrão.')
+    parcelamento_contratacao_py = llm_context_data.get('parcelamentoContratacao', 'Não especificado.')
+    justificativa_parcelamento_py = llm_context_data.get('justificativaParcelamento', 'Não se aplica.')
+    contexto_geral_orgao_py = llm_context_data.get('contextoGeralOrgao', '')
     
     today = date.today()
     meses_pt = {
         1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril", 5: "maio", 6: "junho",
         7: "julho", 8: "agosto", 9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro"
     }
-    mes_extenso = meses_pt[today.month]
-    ano_atual = today.year
+    mes_extenso_py = meses_pt[today.month]
+    ano_actual_py = today.year
+    today_formatted = today.strftime('%d/%m/%Y')
     
-    esfera_administrativa = "Federal"
-    orgao_nome_lower = orgao_nome.lower()
+    esfera_administrativa_py = "Federal"
+    orgao_nome_lower = orgao_nome_py.lower()
     if any(term in orgao_nome_lower for term in ["municipal", "pref.", "prefeitura"]):
-        esfera_administrativa = "Municipal"
+        esfera_administrativa_py = "Municipal"
     elif any(term in orgao_nome_lower for term in ["estadual", "governo do estado", "secretaria de estado", "tj", "tribunal de justiça"]):
-        esfera_administrativa = "Estadual"
+        esfera_administrativa_py = "Estadual"
         
-    local_etp_full = f"[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, ex: Brasília/DF], {today.day} de {mes_extenso} de {ano_atual}"
+    local_etp_full_py = f"[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, ex: Brasília/DF], {today.day} de {mes_extenso_py} de {ano_actual_py}"
 
+    # Prepara o JSON para o prompt
+    llm_context_data_json = json.dumps(llm_context_data, indent=2, ensure_ascii=False)
+
+    # Prepara os sumários dos aceleradores para o prompt
     accelerator_details_prompt_list = []
-    produtos_selecionados = llm_context_data.get("produtosXertica", [])
+    produtos_selecionados = llm_context_data.get("produtosXertica", []) # Isso já é a lista de nomes originais
     for product_name in produtos_selecionados: # product_name aqui é o nome original, ex: "Meet Transcriber"
-        integration_key = f"integracao_{product_name.replace(' ', '_').replace('.', '_')}"
-        user_integration_detail = llm_context_data.get(integration_key, "").strip()
+        # Access user integration detail using the normalized key stored earlier
+        integration_key_in_llm_context = f"integracao_{product_name.replace(' ', '_').replace('.', '_')}"
+        user_integration_detail = llm_context_data.get(integration_key_in_llm_context, "").strip()
         
         # Acessar o conteúdo do GCS usando a chave que está no llm_context_data, que usa o nome original
-        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_BC", "Dados do Battle Card não disponíveis para este produto.")
-        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS", "Dados do Data Sheet não disponíveis para este produto.")
+        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_BC", "")
+        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS", "")
         
+        op_content_prod_raw = ""
         # Lógica para OP com nomes especiais GWS/GCP/GMP precisa ser robusta aqui
-        op_content_prod_raw = "Dados do Plano Operacional não disponíveis para este produto."
-        if product_name == "GCP": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GCP_OP_GCP", op_content_prod_raw)
-        elif product_name == "GMP": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GMP_OP_GMP", op_content_prod_raw)
-        elif product_name == "GWS": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GWS_OP_GWS", op_content_prod_raw)
-        else: op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP", op_content_prod_raw)
+        if product_name == "GCP": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GCP_OP_GCP", "")
+        elif product_name == "GMP": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GMP_OP_GMP", "")
+        elif product_name == "GWS": op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"GWS_OP_GWS", "")
+        else: op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP", "")
 
+        bc_summary = bc_content_prod_raw[:min(1000, len(bc_content_prod_raw))] + ("..." if len(bc_content_prod_raw) > 1000 else "") if bc_content_prod_raw else "Dados do Battle Card não disponíveis para este produto."
+        ds_summary = ds_content_prod_raw[:min(1000, len(ds_content_prod_raw))] + ("..." if len(ds_content_prod_raw) > 1000 else "") if ds_content_prod_raw else "Dados do Data Sheet não disponíveis para este produto."
+        op_summary = op_content_prod_raw[:min(1000, len(op_content_prod_raw))] + ("..." if len(op_content_prod_raw) > 1000 else "") if op_content_prod_raw else "Dados do Plano Operacional não disponíveis para este produto."
 
-        bc_summary = bc_content_prod_raw[:min(1000, len(bc_content_prod_raw))] + ("..." if len(bc_content_prod_raw) > 1000 else "")
-        ds_summary = ds_content_prod_raw[:min(1000, len(ds_content_prod_raw))] + ("..." if len(ds_content_prod_raw) > 1000 else "")
-        op_summary = op_content_prod_raw[:min(1000, len(op_content_prod_raw))] + ("..." if len(op_content_prod_raw) > 1000 else "")
 
         accelerator_details_prompt_list.append(f"""
     - **Acelerador:** {product_name}
@@ -394,31 +376,24 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
       - **Aplicação Específica no Órgão (Input do Usuário):** {user_integration_detail if user_integration_detail else 'Nenhum detalhe de integração fornecido. O LLM deve inferir a aplicação com base no problema/solução, nos documentos do acelerador e no contexto Xertica.ai'}
         """)
     
-    accelerator_details_prompt_section = "\n".join(accelerator_details_prompt_list) if accelerator_details_prompt_list else "Nenhum acelerador Xertica.ai selecionado ou detalhes não fornecidos."
+    gcs_accel_str_for_prompt = "\n".join(accelerator_details_prompt_list) if accelerator_details_prompt_list else "Nenhum acelerador Xertica.ai selecionado ou detalhes não fornecidos."
 
-    proposta_comercial_content = llm_context_data.get("proposta_comercial_content", "Conteúdo da proposta comercial não fornecido ou erro na extração.")
-    proposta_tecnica_content = llm_context_data.get("proposta_tecnica_content", "Conteúdo da proposta técnica não fornecido ou erro na extração.")
 
-    price_map_federal_template = """
-| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
-|---|---|---|---|---|---|
-| {{Preencher com tipo genérico da solução Xertica e especificação}} | {{Preencher com Lei 14.133/2021, Pesquisa de Mercado, Contratos Similares ou Proposta Xertica.ai}} | {{Preencher valor unitário realista, ex: 150000.00}} | {{Calcular ou preencher realista, ex: 12500.00}} | {{Preencher com unidades lógicas, ex: 1 licença base, 500 usuários, 1000 transações/mês}} | {{Calcular ou preencher realista, ex: 150000.00, 750000.00, 100000.00}} |
-| {{Preencher com tipo genérico da solução Xertica e especificação}} | {{Preencher com Lei 14.133/2021, Pesquisa de Mercado, Contratos Similares ou Proposta Xertica.ai}} | {{Preencher valor unitário realista, ex: 150000.00}} | {{Calcular ou preencher realista, ex: 12500.00}} | {{Preencher com unidades lógicas, ex: 1 licença base, 500 usuários, 1000 transações/mês}} | {{Calcular ou preencher realista, ex: 150000.00, 750000.00, 100000.00}} |
-"""[1:] 
-    price_map_estadual_municipal_template = """
-| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Empresa Contratada (Ref.) | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
-|---|---|---|---|---|---|---|
-| {{Preencher com tipo genérico da solução Xertica e especificação}} | {{Preencher com Lei 14.133/2021, Pesquisa de Mercado, Contratos Similares ou Proposta Xertica.ai}} | Xertica.ai | {{Preencher valor unitário realista, ex: 150000.00}} | {{Calcular ou preencher realista, ex: 12500.00}} | {{Preencher com unidades lógicas, ex: 1 licença base, 500 usuários, 1000 transações/mês}} | {{Calcular ou preencher realista, ex: 150000.00, 750000.00, 100000.00}} |
-| {{Preencher com tipo genérico da solução Xertica e especificação}} | {{Preencher com Lei 14.133/2021, Pesquisa de Mercado, Contratos Similares ou Proposta Xertica.ai}} | Xertica.ai | {{Preencher valor unitário realista, ex: 150000.00}} | {{Calcular ou preencher realista, ex: 12500.00}} | {{Preencher com unidades lógicas, ex: 1 licença base, 500 usuários, 1000 transações/mês}} | {{Calcular ou preencher realista, ex: 150000.00, 750000.00, 100000.00}} |
-"""[1:]
+    proposta_comercial_content_py = llm_context_data.get("proposta_comercial_content", "Conteúdo da proposta comercial não fornecido ou erro na extração.")
+    proposta_tecnica_content_py = llm_context_data.get("proposta_tecnica_content", "Conteúdo da proposta técnica não fornecido ou erro na extração.")
 
-    price_map_to_use_template = price_map_federal_template if esfera_administrativa == "Federal" else price_map_estadual_municipal_template
+    # Formata valor_estimado_input para o prompt
+    valor_estimado_input_final = (f"{valor_estimado_input:.2f}".replace('.', ',') if valor_estimado_input is not None else '[[VALOR ESTIMADO PELO LLM COM BASE NAS INFORMAÇÕES FORNECIDAS]]')
 
-    # Início da construção da string do prompt principal
-    # Esta string literal contém os elementos que o LLM verá.
-    # As chaves '{{...}}' são intencionalmente escapadas para o LLM.
-    # As chaves '{...}' são placeholders para format() do Python.
-    llm_prompt_content_final = """
+    # Formata justificativa_parcelamento para o prompt
+    justificativa_parcelamento_final_py = (justificativa_parcelamento_py if parcelamento_contratacao_py == 'Justificar' and justificativa_parcelamento_py else f"A decisão por {('parcelar' if parcelamento_contratacao_py == 'Sim' else 'não parcelar')} a contratação foi embasada na busca por {('maior flexibilidade na gestão e adaptação do projeto por fases, permitindo entregas incrementais e avaliação contínua dos resultados. Isso mitiga riscos e permite o aprimoramento progressivo da solução, além de otimizar a gestão orçamentária.' if parcelamento_contratacao_py == 'Sim' else 'garantir a integralidade da solução e a sinergia entre seus componentes, otimizando o processo de implementação e a entrega de resultados completos. O não parcelamento minimiza a fragmentação de responsabilidades, assegura a interoperabilidade plena e acelera o tempo de valor da solução para o órgão.')}.")
+
+    # Nomes dos produtos selecionados para o prompt
+    nomes_produtos_selecionados_py = ', '.join(produtos_selecionados) if produtos_selecionados else '[LISTAR ACELERADORES SELECIONADOS]'
+
+
+    # O corpo do prompt é uma string literal, formatada no final com .format()
+    llm_prompt_content_template = """
 Você é um assistente de IA altamente especializado em elaboração de documentos técnicos e legais para o setor público brasileiro (esferas Federal, Estadual e Municipal), com expertise em licitações (Lei nº 14.133/2021, Lei 13.303/2016 e outras regulamentações específicas, como o Decreto Estadual 21.872/2023 se aplicável), e nas soluções de Inteligência Artificial da Xertica.ai.
 
 Sua tarefa é gerar duas seções completas (ETP e TR) em Markdown.
@@ -438,18 +413,18 @@ Formato do JSON de Saída:
 Regras Detalhadas para Geração de Conteúdo:
 
 Adaptação Linguística e Legal Específica por Esfera: Adapte toda a linguagem e referências legais (por exemplo, "Lei Orçamentária Anual da União" vs. "Lei Orçamentária Anual do Estado/Município", "MINISTÉRIO PÚBLICO da {{{{NÍVEL ADMINISTRATIVO}}}}", ou legislações específicas de estado/município quando relevante) com base na esfera administrativa {esfera_administrativa_py} do {orgao_nome_py}.
-Racionalize Informações Incompletas e Preencha Placeholders: Para campos que "deverão ser preenchidos pelo órgão" e que não estão na entrada (como número de processo, nomes de responsáveis técnicos, dados orçamentários), o LLM deve:Preencher com um placeholder claro em negrito e entre [ ] como [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO].
+Racionalize Informações Incompletas e Preencha Placeholders: Para campos que "deverão ser preenchidos pelo órgão" e que não estão na entrada (como número de processo, nomes de responsáveis técnicos, dados orçamentários), o LLM deve: Preencher com um placeholder claro em negrito e entre [ ] como [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO].
 No caso de número de processo (Processo Administrativo nº), gerar um formato genérico e consistente (XXXXXX/{{{{ANO_ATUAL_LLM}}}}).
 Para CNAE, sugira um CNAE de TI comum (ex: "6204-0/00 - Consultoria em tecnologia da informação") e ADICIONE TEXTO explicando que "o CNAE específico deverá ser confirmado e preenchido pelo órgão".
 Para prazos de recebimento e faturamento/pagamento, utilize valores razoáveis e comuns para contratos públicos (ex: "5 (cinco) dias úteis", "15 (quinze) dias corridos").
-Preencha os valores da tabela de Mapa de Preços de Referência com estimativas realistas, explicando que o valor está em consonância com dados de mercado e propostas anteriores. Se o {valor_estimado_input_py} global foi fornecido, a soma da tabela deve se aproximar dele, e os valores unitários e mensais devem ser coerentes.
+Preencha os valores da tabela de Mapa de Preços de Referência com estimativas realistas, explicando que o valor está em consonância com dados de mercado e propostas anteriores. Se o {valor_estimado_input_final} global foi fornecido, a soma da tabela deve se aproximar dele, e os valores unitários e mensais devem ser coerentes.
 Análise Profunda e Detalhamento (Deep Research / RAG): Utilize rigorosamente as informações dos Battle Cards, Data Sheets e Operational Plans (do GCS) e o conteúdo extraído das propostas anexadas (PDFs) para realizar uma "deep research" e descrever as funcionalidades dos aceleradores da Xertica.ai.
 CRÍTICO: Nas seções de "Descrição da Solução", "Requisitos", "Levantamento de Mercado" e "Justificativa da Solução", o LLM deve detalhar o que a Xertica.ai faz de ÚNICO ou MELHOR (ex: integração nativa com GCP, especialização no setor público, notória especialização, vivência em projetos similares, adaptabilidade, inovação, etc.) em comparação com alternativas, usando o contexto do GCS e PDFs.
 Descreva como as soluções Xertica.ai diretamente resolvem a {justificativa_necessidade_py} e atingem o {objetivo_geral_py} do órgão, detalhando os benefícios e impactos esperados em prosa analítica.
 Em "Levantamento de Mercado", além de justificar a Xertica.ai, pode-se brevemente mencionar tipos de soluções alternativas e por que a Xertica.ai é a mais vantajosa (ex: inovação superior, integração facilitada, foco no setor público).
 Resultados Esperados: Detalhe os resultados esperados com indicadores qualitativos e, se possível, quantitativos (ex: "redução de até X% no tempo de atendimento", "aumento de Y% na satisfação do usuário").
 Justificativa Legal Robusta: Para o {modelo_licitacao_py}, use o conhecimento da Lei 14.133/2021 e da Lei 13.303/2016 e o contexto legal do GCS (MTI, MPAP, SERPRO MoU, ABES, Riscos) para fornecer justificativas legais detalhadas, citando artigos relevantes e explicando a aplicabilidade.
-Formatação Markdown: A saída deve ser Markdown válido. Use # para H1, ## para H2, ### para H3, * ou - para listas NÃO aninhadas. Garanta que as tabelas sejam formatadas corretamente.
+Formatação Markdown: A saída DEVE ser Markdown válido. Use # para H1, ## para H2, ### para H3, * ou - para listas NÃO aninhadas. Garanta que as tabelas sejam formatadas corretamente.
 DADOS FORNECIDOS PELO USUÁRIO (Órgão Solicitante):
 
 {llm_context_data_json}
@@ -459,11 +434,11 @@ Proposta Técnica: {proposta_tecnica_content_py}
 
 MAPA DE PREÇOS DE REFERÊNCIA PARA CONTRATAÇÃO (Estrutura Fornecida para Orientação do LLM):
 Utilize esta estrutura para fundamentar a seção de estimativa de preço. O LLM DEVE PREENCHER OS VALORES de forma realista e justificada, mesmo que o input valorEstimado não seja fornecido. Se valorEstimado for fornecido, a soma da tabela deve se aproximar dele.
-{price_map_to_use_template_py}
+{price_map_to_use_template}
 
 CONTEÚDO DE CONTEXTO GCS (Battle Cards, Data Sheets, OP, Documentos Legais):
-{gcs_accel_str_py}
-{gcs_legal_str_py}
+{gcs_accel_str}
+{gcs_legal_str}
 
 Mapeamento de Placeholders para Preenchimento (Para o LLM):
 
@@ -480,9 +455,9 @@ Mapeamento de Placeholders para Preenchimento (Para o LLM):
 {{levantamento_mercado}}: Analisa mercado, diferenciais da Xertica.ai usando gcs_accelerator_content, proposta_tecnica_content_py, e exemplos como PROCERGS MPRS TJES.
 {{estimativa_demanda}}: Estima demanda com base na {justificativa_necessidade_py} e {objetivo_geral_py}.
 {{mapa_comparativo_custos}}: Tabela e texto justificando a estimativa de custos (LLM DEVE PREENCHER A TABELA COM VALORES).
-{{valor_estimado_total_etp}}: Valor final e justificativa. Se {valor_estimado_input_py} foi fornecido ({valor_estimado_input_py}), usar como base. Senão, o LLM estima.
+{{valor_estimado_total_etp}}: Valor final e justificativa. Se {valor_estimado_input_py} foi fornecido ({valor_estimado_input_final}), usar como base. Senão, o LLM estima.
 {{descricao_solucao_etp}}: Descrição da solução, baseada nos aceleradores e proposta_tecnica_content.
-{{parcelamento_justificativa}}: Justificativa para parcelamento ({parcelamento_contratacao_py}, {justificativa_parcelamento_py}).
+{{parcelamento_justificativa}}: Justificativa para parcelamento ({parcelamento_contratacao_py}, {justificativa_parcelamento_final_py}).
 {{providencias_tomadas}}: Lista de providências (genéricas).
 {{declaracao_viabilidade}}: Declaração de viabilidade.
 {{nomes_cargos_responsaveis}}: Nomes e cargos de responsáveis.
@@ -565,7 +540,7 @@ Quantitativos: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, com base em volum
 Mapa comparativo dos custos
 O mapa comparativo de custos detalhado está disponível na Proposta Comercial da Xertica.ai e foi ratificado por cuidadosa pesquisa de mercado e comparação com contratos similares. A análise não se restringiu apenas ao menor preço, mas considerou o Custo Total de Propriedade (TCO), o Retorno sobre Investimento (ROI) estimado, os custos de implementação, treinamento, suporte contínuo e a capacidade de inovação futura. O valor estimado foi ratificado por [CITE FONTES DE PESQUISA, PUBLICAÇÕES OU DISPENSA/INEXIGIBILIDADE SE PUDER OU DEIXE EM ABERTO]:
 
-{price_map_to_use_template_py}
+{price_map_to_use_template}
 
 Estimativa de custo total da contratação
 O valor estimado global para esta contratação, considerando todas as fases de implementação, licenciamento e suporte para o período de {prazos_estimados_py}, é de R$ {valor_estimado_input_final}. Este valor reflete a complexidade da solução, a especialização exigida e a garantia de resultados alinhados aos objetivos do {orgao_nome_py}.
@@ -656,7 +631,7 @@ Manutenibilidade e Suporte: Facilidade de manutenção e atualização, com docu
 Práticas de Sustentabilidade: Alinhamento com critérios de sustentabilidade ambiental, social e econômica na execução dos serviços e operação da solução, conforme diretrizes da Lei nº 14.133/2021.
 4.2. Da exigência de carta de solidariedade: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - (SIM/NÃO) e justificativa, conforme edital. Se aplicável, a Xertica.ai pode fornecer.].
 
-4.3. SUBCONTRATAÇÃO: {{regras_subcontratacao}} Não será permitida a subcontratação de partes relevantes do objeto da contratação. Apenas serviços pontuais e previamente autorizados pelo {orgao_nome_py} poderão ser subcontratados. (Ou: Totalmente Permitida ou Condicionada à Aprovação - preencher conforme o caso).
+4.3. SUBCONTRATAÇÃO: {{regras_subcontratacao}} Apenas serviços pontuais e previamente autorizados pelo {orgao_nome_py} poderão ser subcontratados. (Ou: Não será permitida a subcontratação de partes relevantes do objeto da contratação; Ou: Totalmente Permitida; Ou: Condicionada à Aprovação - preencher conforme o caso).
 
 4.4. GARANTIA DA CONTRATAÇÃO: {{regras_garantia}} A CONTRATADA deverá oferecer garantia técnica mínima de 12 (doze) meses sobre os serviços prestados e a solução implementada, contados a partir do recebimento definitivo do objeto. Esta garantia abrange correção de falhas e bom funcionamento da solução.
 
@@ -720,37 +695,30 @@ Fonte: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
 Natureza da Despesa: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - ex: 44.90.39 - Outros Serviços de Terceiros - Pessoa Jurídica]
 10.2. A dotação relativa aos exercícios financeiros subsequentes será indicada após aprovação da Lei Orçamentária respectiva e liberação dos créditos correspondentes, mediante apostilamento, conforme previsão legal.
 
-{{anexos_tr}}
 Há anexos no pedido: Sim (Proposta Comercial e Proposta Técnica da Xertica.ai, Battle Cards e Data Sheets dos aceleradores, e outros documentos de contexto legal).
-
-{{obrigações_contratado_tr}}
-{{obrigações_orgao_tr}}
-{{sancoes_administrativas_tr}}
-
-Gere o objeto JSON agora, seguindo todas as instruções e o formato especificado.
 """.format(
-esfera_administrativa_py=esfera_administrativa,
-orgao_nome_py=orgao_nome,
-titulo_projeto_py=titulo_projeto,
-justificativa_necessidade_py=justificativa_necessidade,
-objetivo_geral_py=objetivo_geral,
-prazos_estimados_py=prazos_estimados,
-valor_estimado_input_final=(f"{valor_estimado_input:.2f}".replace('.', ',') if valor_estimado_input is not None else '[[VALOR ESTIMADO PELO LLM COM BASE NAS INFORMAÇÕES FORNECIDAS]]'),
-modelo_licitacao_py=modelo_licitacao,
-parcelamento_contratacao_py=parcelamento_contratacao,
-justificativa_parcelamento_final_py=(justificativa_parcelamento if justificativa_parcelamento else f"A decisão por {('parcelar' if parcelamento_contratacao == 'Sim' else 'não parcelar')} a contratação foi embasada na busca por {('maior flexibilidade na gestão e adaptação do projeto por fases, permitindo entregas incrementais e avaliação contínua dos resultados. Isso mitiga riscos e permite o aprimoramento progressivo da solução, além de otimizar a gestão orçamentária.' if parcelamento_contratacao == 'Sim' else 'garantir a integralidade da solução e a sinergia entre seus componentes, otimizando o processo de implementação e a entrega de resultados completos. O não parcelamento minimiza a fragmentação de responsabilidades, assegura a interoperabilidade plena e acelera o tempo de valor da solução para o órgão.')}."),
-contexto_geral_orgao_py=(contexto_geral_orgao if contexto_geral_orgao else f"A {orgao_nome}, em sua missão de modernizar a gestão pública e aprimorar a prestação de serviços ao cidadão, busca constantemente soluções inovadoras que garantam eficiência, transparência e segurança."),
-llm_context_data_json=json.dumps(llm_context_data, indent=2, ensure_ascii=False),
-proposta_comercial_content_py=proposta_comercial_content,
-proposta_tecnica_content_py=proposta_tecnica_content,
-price_map_to_use_template_py=price_map_to_use_template,
-gcs_accel_str_py=gcs_accel_str,
-gcs_legal_str_py=gcs_legal_str,
-today_formatted=today.strftime('%d/%m/%Y'),
-mes_extenso_py=mes_extenso,
-ano_actual_py=ano_atual,
-local_etp_full_py=local_etp_full,
-nomes_produtos_selecionados_py=', '.join(produtos_selecionados) if produtos_selecionados else '[LISTAR ACELERADORES SELECIONADOS]',
+esfera_administrativa_py=esfera_administrativa_py,
+orgao_nome_py=orgao_nome_py,
+titulo_projeto_py=titulo_projeto_py,
+justificativa_necessidade_py=justificativa_necessidade_py,
+objetivo_geral_py=objetivo_geral_py,
+prazos_estimados_py=prazos_estimados_py,
+valor_estimado_input_final=valor_estimado_input_final,
+modelo_licitacao_py=modelo_licitacao_py,
+parcelamento_contratacao_py=parcelamento_contratacao_py,
+justificativa_parcelamento_final_py=justificativa_parcelamento_final_py,
+contexto_geral_orgao_py=(contexto_geral_orgao_py if contexto_geral_orgao_py else f"A {orgao_nome_py}, em sua missão de modernizar a gestão pública e aprimorar a prestação de serviços ao cidadão, busca constantemente soluções inovadoras que garantam eficiência, transparência e segurança."),
+llm_context_data_json=llm_context_data_json,
+proposta_comercial_content_py=proposta_comercial_content_py,
+proposta_tecnica_content_py=proposta_tecnic_content_py,
+price_map_to_use_template=price_map_to_use_template,
+gcs_accel_str=gcs_accel_str,
+gcs_legal_str=gcs_legal_str,
+today_formatted=today_formatted,
+mes_extenso_py=mes_extenso_py,
+ano_actual_py=ano_actual_py,
+local_etp_full_py=local_etp_full_py,
+nomes_produtos_selecionados_py=nomes_produtos_selecionados_py,
 )
 
 try:
@@ -945,8 +913,8 @@ logger.info("Enviando dados de contexto para o LLM Gemini.")
 llm_response = await generate_etp_tr_content_with_gemini(llm_context_data)
 
 document_subject = llm_response.get("subject", f"ETP e TR: {orgaoSolicitante} - {tituloProjeto} ({date.today().strftime('%Y-%m-%d')})")
-etp_content_md = llm_response.get("etp_content", "# ETP\n\nErro: Conteúdo do ETP não foi gerado corretamente pelo LLM.")
-tr_content_md = llm_response.get("tr_content", "# Termo de Referência\n\nErro: Conteúdo do TR não foi gerado corretamente pelo LLM.")
+etp_content_md = llm_response.get("etp_content", "# ETP\\n\\nErro: Conteúdo do ETP não foi gerado corretamente pelo LLM.")
+tr_content_md = llm_response.get("tr_content", "# Termo de Referência\\n\\nErro: Conteúdo do TR não foi gerado corretamente pelo LLM.")
 
 docs_service, drive_service = authenticate_google_docs_and_drive()
 
@@ -954,7 +922,7 @@ try:
     new_doc_body = {'title': document_subject}
     new_doc_metadata = drive_service.files().create(body=new_doc_body, fields='id,webViewLink').execute()
     document_id = new_doc_metadata.get('id')
-    document_link_initial = new_doc_metadata.get('webViewLink') # Link inicial
+    document_link_initial = new_doc_metadata.get('webViewLink')
     
     if not document_id:
         logger.error("Falha ao criar novo documento no Google Docs. ID não retornado.")
@@ -1011,6 +979,6 @@ except HttpError as e_google_api:
     logger.exception(f"Erro na API do Google Docs/Drive durante criação/atualização do documento: {error_message}") 
     raise HTTPException(status_code=e_google_api.resp.status if hasattr(e_google_api, 'resp') else 500, 
                         detail=f"Erro na API do Google Docs/Drive: {error_message}")
-except Exception as e_general:
-    logger.exception(f"Erro inesperado durante a geração ou criação do documento Google Docs: {e_general}") 
-    raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e_general}. Verifique os logs.")
+except Exception as e:
+    logger.exception(f"Erro inesperado durante a geração ou criação do documento Google Docs: {e}") 
+    raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}. Verifique os logs.")
