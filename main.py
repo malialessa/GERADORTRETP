@@ -231,7 +231,7 @@ Tipo de Licença | Fonte (Contrato) | Valor Unitário Anual (R$) | Valor Mensal 
 """[1:] 
 
     price_map_municipal_template = """
-Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual (R$) | Valor Mensal (R$) | Qtd. Ref. | Valor Total Estimado (R$) Anual
+Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual (R$) | Valor Mensal (R$) | Qtd. Ref. | Valor Total Estimado (R%) Anual
 ---|---|---|---|---|---|---
 """[1:]
     
@@ -240,6 +240,7 @@ Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual
         price_map_to_use_template = price_map_federal_template
     else: # Estadual ou Municipal usa o mesmo modelo do municipal para agora
         price_map_to_use_template = price_map_municipal_template
+
 
     # INÍCIO DO PROMPT PARA O LLM
     llm_prompt_content = f"""
@@ -263,9 +264,9 @@ Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual
 
     1.  **Adaptação Linguística e Legal Específica por Esfera:** Adapte toda a linguagem e referências legais (por exemplo, "Lei Orçamentária Anual da União" vs. "Lei Orçamentária Anual do Estado/Município") com base na esfera administrativa **{esfera_administrativa}** do `orgaoSolicitante`.
     2.  **Siga os Modelos Rigorosamente:** Preencha os Markdowns para ETP e TR. **Importante:** Não inclua explicações ou comentários do modelo original (texto em vermelho, verde, azul, ou anotações `< Identificar... >` como parte da saída final do documento).
-    3.  **Racionalização e Preenchimento de Placeholders:** Para campos não preenchidos pelo usuário (como `numero_processo_administrativo`, `CNAE`, nome dos responsáveis), o LLM deve:
+    3.  **Racionalize Informações Incompletas:** Para campos que "deverão ser preenchidos pelo órgão" e que não estão na entrada (como número de processo, CNAE, quantitativos exatos, nomes de responsáveis técnicos), o LLM deve:
         *   Preencher com um placeholder claro como `[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]`.
-        *   Gerar um exemplo genérico e consistente para os campos que podem ter um valor padrão (ex: `Processo Administrativo nº XXXXXX/ANO`).
+        *   Gerar um exemplo genérico e consistente (`XXXXXX`, `[Nome Completo]`) para os campos como "Número do Processo Administrativo", "ID PCA no PNCP".
         *   Para **CNAE**, sugira um CNAE de TI comum (ex: "6204-0/00 - Consultoria em tecnologia da informação") e ADICIONE TEXTO explicitando que "o CNAE específico deverá ser confirmado e preenchido pelo órgão".
         *   Para prazos de recebimento e faturamento/pagamento, utilize valores razoáveis e comuns para contratos públicos (ex: "5 (cinco) dias úteis", "15 (quinze) dias corridos").
     4.  **Integração do Mapa de Preços:** Use o "MAPA DE PREÇOS DE REFERÊNCIA" (cuja estrutura está abaixo) para justificar a estimativa de custo. Se o `valorEstimado` do formulário foi N/A, rationalize-o com base em uma suposta pesquisa de mercado ou em faixas razoáveis, mencionando que "o valor está em consonância com dados de mercado e propostas anteriores", **referenciando a estrutura do mapa de preços como base dessa análise**. O LLM deve inferir valores plausíveis e justificá-los mesmo sem dados completos na tabela.
@@ -333,14 +334,14 @@ async def generate_etp_tr_endpoint(
     tituloProjeto: str = Form(...),
     justificativaNecessidade: str = Form(...),
     objetivoGeral: str = Form(...),
-    prazosEstimados: str = Form(...),
+    prazosEstimados: str = Form(..., description="Prazos estimados para implantação e execução. Ex: 3 meses para implantação, 12 meses de operação."),
     modeloLicitacao: str = Form(...),
     parcelamentoContratacao: str = Form(...),
     contextoGeralOrgao: Optional[str] = Form(None),
     valorEstimado: Optional[float] = Form(None),
     justificativaParcelamento: Optional[str] = Form(None),
-    propostaComercialFile: Optional[UploadFile] = File(None),
-    propostaTecnicaFile: Optional[UploadFile] = File(None)
+    propostaComercialFile: Optional[UploadFile] = File(None, description="Proposta Comercial da Xertica.ai em PDF."),
+    propostaTecnicaFile: Optional[UploadFile] = File(None, description="Proposta Técnica da Xertica.ai em PDF.")
 ):
     logger.info(f"Requisição para '{tituloProjeto}' de '{orgaoSolicitante}' recebida.")
 
@@ -426,8 +427,8 @@ async def generate_etp_tr_endpoint(
             'title': document_subject, 
             'mimeType': 'application/vnd.google-apps.document'
         }
-        new_doc_metadata = docs_service.documents().create(body=new_doc_body).execute()
-        document_id = new_doc_metadata.get('documentId')
+        new_doc_metadata = drive_service.files().create(body=new_doc_body, fields='id').execute() # CORRIGIDO: Usando drive_service.files().create()
+        document_id = new_doc_metadata.get('id') # CORRIGIDO: Obtendo 'id' do objeto retornado pelo Drive API.
         
         if not document_id:
             raise HTTPException(status_code=500, detail="Falha ao criar novo documento no Google Docs.")
