@@ -358,11 +358,13 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_BC_GCS", "Dados do Battle Card não disponíveis.")) # Fallback para _BC_GCS
         ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS", 
                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_DS_GCS", "Dados do Data Sheet não disponíveis."))
+        
+        # CORREÇÃO APLICADA AQUI:
         op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP", 
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GCP", # Para GCP
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GMP", # Para GMP
-                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GWS", # Para GWS
-                                "Dados do Plano Operacional não disponíveis.")))))
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GCP", 
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GMP", 
+                                llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name}_OP_GWS", 
+                                "Dados do Plano Operacional não disponíveis"))))
 
 
         bc_summary = bc_content_prod_raw[:min(1000, len(bc_content_prod_raw))] + ("..." if len(bc_content_prod_raw) > 1000 else "")
@@ -825,15 +827,18 @@ async def generate_etp_tr_endpoint(
         "contextoGeralOrgao": contextoGeralOrgao if contextoGeralOrgao else "Não fornecido.",
         "valorEstimado": valorEstimado,
         "justificativaParcelamento": justificativaParcelamento if justificativaParcelamento else "Não fornecida.",
-        "produtosXertica": produtosXertica_list,
+        "produtosXertica": produtosXertica_list, # Lista de nomes normalizados do JS
         "data_geracao_documento": date.today().strftime("%d/%m/%Y"),
     }
 
-    for product_name_form in produtosXertica_list:
-        # Normaliza o nome do produto para corresponder à chave no formulário HTML
-        integration_key = f"integracao_{product_name_form.replace(' ', '_').replace('.', '_')}"
-        llm_context_data[integration_key] = form_data.get(integration_key, f"Detalhes de integração para {product_name_form} não fornecidos.")
-        logger.info(f"Detalhe de integração para '{product_name_form}': {llm_context_data[integration_key]}")
+    for product_name_form_normalized in produtosXertica_list: # product_name_form_normalized já é o valor normalizado do select
+        # A chave de integração já usa o nome normalizado que veio do form_data.getlist("produtosXertica")
+        # e que foi usado para gerar o 'name' do textarea no JS.
+        integration_key_expected_by_llm_prompt = f"integracao_{product_name_form_normalized}" # Chave que o prompt espera
+        
+        # O form_data já deve conter `integracao_NormalizedProductName` devido ao `name` do textarea no JS
+        llm_context_data[integration_key_expected_by_llm_prompt] = form_data.get(integration_key_expected_by_llm_prompt, f"Detalhes de integração para {product_name_form_normalized} não fornecidos.")
+        logger.info(f"Detalhe de integração para '{product_name_form_normalized}': {llm_context_data[integration_key_expected_by_llm_prompt]}")
 
 
     # Processamento de arquivos PDF anexados
@@ -865,49 +870,72 @@ async def generate_etp_tr_endpoint(
     llm_context_data['gcs_accelerator_content'] = {}
     llm_context_data['gcs_legal_context_content'] = {}
 
-    for product_name in produtosXertica_list:
-        product_normalized_name = product_name.replace(' ', '_').replace('.', '_') 
+    # produtosXertica_list contém os valores normalizados das options (ex: "Meet_Transcriber")
+    # Precisamos do nome original para buscar os arquivos no GCS se a estrutura de pastas/arquivos usar o nome original.
+    # No entanto, o prompt espera as chaves com o nome original (ex: "Meet Transcriber_BC").
+    # Vamos assumir que a busca no GCS deve usar o nome original do produto se a estrutura for assim.
+    # Se a estrutura GCS usa nomes normalizados, então product_name_normalized (que é o mesmo que product_name_from_select) é o correto.
 
-        # Tratamento especial para GCP, GMP, GWS conforme instruído
-        if "GCP" in product_name:
+    # Mapeamento de valor normalizado para nome original (se necessário para GCS)
+    # Se a estrutura do GCS usa nomes normalizados, este mapa não é estritamente necessário para a busca,
+    # mas é útil para construir as chaves que o LLM espera (com o nome original).
+    # O JavaScript já envia os valores normalizados.
+    # O Python precisa saber o nome original para construir a chave como "Nome Original_BC" para o LLM.
+    # E para buscar no GCS, pode precisar do nome original ou normalizado dependendo da estrutura do bucket.
+
+    # Para simplificar, vamos assumir que o `product_name_from_select` (que é o valor normalizado)
+    # é o que usamos para construir as chaves para o LLM (ex: "Meet_Transcriber_BC")
+    # e que a estrutura do GCS também pode usar esses nomes normalizados ou os originais.
+    # A lógica atual já tenta caminhos com nome normalizado e original.
+
+    for product_name_normalized_from_select in produtosXertica_list:
+        # O product_name_normalized_from_select é o que veio do formulário (ex: "Meet_Transcriber")
+        # Para o LLM e para as chaves em `llm_context_data`, vamos usar este nome normalizado
+        # para consistência com as chaves de `integracao_...`
+        # Se o GCS usa nomes originais, a lógica de `get_gcs_file_content` precisaria de um mapeamento reverso.
+        # Por ora, vamos manter a lógica de busca como está, que tenta nomes normalizados e originais.
+        # A chave para o LLM será `product_name_normalized_from_select + "_BC"`, etc.
+
+        product_original_name_for_display = product_name_normalized_from_select.replace('_', ' ') # Para logs e talvez para chaves do LLM se o prompt espera o nome original
+
+        if "GCP" in product_original_name_for_display: # Usar o nome original para estes casos especiais
             content_op_gcp = get_gcs_file_content(f"GCP/Análise_Técnica_Google_Cloud_Platform_.txt")
-            if content_op_gcp: llm_context_data['gcs_accelerator_content'][f"{product_name}_OP_GCP"] = content_op_gcp # Chave específica
+            if content_op_gcp: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_OP_GCP"] = content_op_gcp
             else: logger.warning(f"GCP analysis text not found at GCP/Análise_Técnica_Google_Cloud_Platform_.txt")
             continue 
 
-        if "GMP" in product_name: # Google Maps Platform
+        if "GMP" in product_original_name_for_display: 
             content_op_gmp = get_gcs_file_content(f"GMP/Google_Maps_Platform_Análise_Técnica_.txt")
-            if content_op_gmp: llm_context_data['gcs_accelerator_content'][f"{product_name}_OP_GMP"] = content_op_gmp # Chave específica
+            if content_op_gmp: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_OP_GMP"] = content_op_gmp
             else: logger.warning(f"GMP analysis text not found at GMP/Google_Maps_Platform_Análise_Técnica_.txt")
             continue
 
-        if "GWS" in product_name: # Google Workspace
+        if "GWS" in product_original_name_for_display: 
             content_op_gws = get_gcs_file_content(f"GWS/Análise_técnica_do_Google_Workspace_.txt")
-            if content_op_gws: llm_context_data['gcs_accelerator_content'][f"{product_name}_OP_GWS"] = content_op_gws # Chave específica
+            if content_op_gws: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_OP_GWS"] = content_op_gws
             else: logger.warning(f"GWS analysis text not found at GWS/Análise_técnica_do_Google_Workspace_.txt")
             continue
         
-        # Para os aceleradores padrão que seguem o formato BC/DS/OP
-        # Caminhos primários (com nome normalizado)
-        bc_path = f"aceleradores_conteudo/{product_normalized_name}/BC_{product_normalized_name}.txt"
-        ds_path = f"aceleradores_conteudo/{product_normalized_name}/DS_{product_normalized_name}.txt"
-        op_path = f"aceleradores_conteudo/{product_normalized_name}/OP_{product_normalized_name}.txt"
+        # Para os aceleradores padrão
+        # `product_name_normalized_from_select` é usado para a pasta
+        # `product_original_name_for_display` é usado para o nome do arquivo no caminho alternativo
+        bc_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/BC_{product_name_normalized_from_select}.txt"
+        ds_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/DS_{product_name_normalized_from_select}.txt"
+        op_path = f"aceleradores_conteudo/{product_name_normalized_from_select}/OP_{product_name_normalized_from_select}.txt"
         
-        # Caminhos alternativos (com nome original do produto)
-        bc_path_alt = f"aceleradores_conteudo/{product_normalized_name}/BC - {product_name}.txt"
-        ds_path_alt = f"aceleradores_conteudo/{product_normalized_name}/DS - {product_name}.txt"
-        op_path_alt = f"aceleradores_conteudo/{product_normalized_name}/OP - {product_name}.txt"
+        bc_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/BC - {product_original_name_for_display}.txt"
+        ds_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/DS - {product_original_name_for_display}.txt"
+        op_path_alt = f"aceleradores_conteudo/{product_name_normalized_from_select}/OP - {product_original_name_for_display}.txt"
         
-
         content_bc = get_gcs_file_content(bc_path) or get_gcs_file_content(bc_path_alt)
         content_ds = get_gcs_file_content(ds_path) or get_gcs_file_content(ds_path_alt)
         content_op = get_gcs_file_content(op_path) or get_gcs_file_content(op_path_alt)
 
-        # Usar chaves genéricas _BC, _DS, _OP para aceleradores padrão
-        if content_bc: llm_context_data['gcs_accelerator_content'][f"{product_name}_BC"] = content_bc
-        if content_ds: llm_context_data['gcs_accelerator_content'][f"{product_name}_DS"] = content_ds
-        if content_op: llm_context_data['gcs_accelerator_content'][f"{product_name}_OP"] = content_op
-        logger.info(f"Conteúdo GCS para acelerador padrão '{product_name}': BC {'encontrado' if content_bc else 'não encontrado'}, DS {'encontrado' if content_ds else 'não encontrado'}, OP {'encontrado' if content_op else 'não encontrado'}.")
+        # Usar o NOME ORIGINAL para as chaves que o LLM espera, conforme o prompt
+        if content_bc: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_BC"] = content_bc
+        if content_ds: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_DS"] = content_ds
+        if content_op: llm_context_data['gcs_accelerator_content'][f"{product_original_name_for_display}_OP"] = content_op
+        logger.info(f"Conteúdo GCS para acelerador padrão '{product_original_name_for_display}': BC {'encontrado' if content_bc else 'não encontrado'}, DS {'encontrado' if content_ds else 'não encontrado'}, OP {'encontrado' if content_op else 'não encontrado'}.")
 
 
     # Exemplos de caminhos para documentos legais/contextuais
