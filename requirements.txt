@@ -5,6 +5,6 @@ google-auth-oauthlib==1.1.0
 google-api-python-client==2.127.0
 pydantic==2.7.2
 python-dotenv==1.0.0
-google-cloud-aiplatform # SDK para usar Vertex AI (Gemini)
-python-multipart # Necessário para FastAPI lidar com UploadFile e Form
-pypdf # Esta linha DEVE ESTAR DESCOMENTADA para instalar a biblioteca
+google-cloud-aiplatform
+python-multipart
+pymupdf==1.23.8  # Adicionado PyMuPDF. Verifique a versão mais estável/recente se precisar.
