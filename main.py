@@ -16,6 +16,7 @@ import vertexai
 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import traceback # Importa para depuração de exceções
 
 # --- Configuração de Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler()])
@@ -43,7 +44,7 @@ app.add_middleware(
 
 # --- Variáveis de Ambiente e Inicialização de Clientes GCP / Vertex AI ---
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
-GCP_PROJECT_LOCATION = os.getenv("GCP_PROJECT_LOCATION", "us-central1") # Região para o Vertex AI
+GCP_PROJECT_LOCATION = os.getenv("GCP_PROJECT_LOCATION", "us-central1") 
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "docsorgaospublicos")
 
 # Validação inicial das variáveis de ambiente obrigatórias
@@ -188,16 +189,8 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
     
     # Nome da localidade para o ETP/TR, inferindo cidade/estado do orgao_nome
     # Isso é uma heurística, idealmente o formulário teria campos para Cidade/UF.
-    partes_nome_orgao = orgao_nome.split()
-    local_etp_cidade = partes_nome_orgao[0] if len(partes_nome_orgao) > 0 else "[Cidade]"
-    local_etp_uf = ""
-    for parte in partes_nome_orgao:
-        if len(parte) == 2 and parte.isupper(): # Tenta encontrar uma UF (2 letras maiúsculas)
-            local_etp_uf = parte
-            break
-    if not local_etp_uf: local_etp_uf = "[UF]"
-    
-    local_etp_full = f"{local_etp_cidade} ({local_etp_uf})"
+    # Usando o nome inteiro do orgao como referencia de local para o prompt
+    local_etp_full = f"{orgao_nome}, {mes_extenso} de {today.year}"
 
 
     # Detalhes de Aceleradores Selecionados para o LLM
@@ -278,7 +271,9 @@ Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual
 
     ---
     **DADOS FORNECIDOS PELO USUÁRIO (Órgão Solicitante):**
+    ```json
     {json.dumps(llm_context_data, indent=2)}
+    ```
 
     ---
     **CONTEÚDO EXTRAÍDO DAS PROPOSTAS XERTICA.AI (Anexos PDF):**
@@ -288,7 +283,9 @@ Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual
     ---
     **MAPA DE PREÇOS DE REFERÊNCIA PARA CONTRATAÇÃO (Estrutura Fornecida para Orientação do LLM):**
     Utilize esta estrutura para fundamentar a seção de estimativa de preço, mesmo que o conteúdo esteja vazio.
+    ```
     {price_map_to_use_template}
+    ```
 
     ---
     **CONTEÚDO DE CONTEXTO GCS (Battle Cards, Data Sheets, OP, Documentos Legais):**
@@ -305,7 +302,6 @@ Tipo de Licença | Fonte (Contrato) | Empresa Contratada | Valor Unitário Anual
             generation_config=_generation_config
         )
         
-        # Log da resposta RAW do Gemini para depuração
         logger.info(f"Resposta RAW do Gemini: {response.text[:2000]}...")
         
         if response.text:
@@ -406,6 +402,10 @@ async def generate_etp_tr_endpoint(
         if get_gcs_file_content(op_path): llm_context_data['gcs_accelerator_content'][f"{product_name}_OP_GCS"] = get_gcs_file_content(op_path)
 
     # Adicionar documentos legais/contratuais de referência do GCS
+    
+    # OBS: O nome do arquivo MoU foi corrigido para o log de leitura do GCS.
+    # No código, ele já estava sendo referenciado corretamente como string.
+    # "Formas ágeis de contratação/Serpro/[Xertica & Serpro] Memorando de Entendimento (MoU) - VersãoFinal.txt"
     llm_context_data['gcs_legal_context_content']["MTI_CONTRATO_EXEMPLO.txt"] = get_gcs_file_content("Formas ágeis de contratação/MTI/CONTRATO DE PARCERIA 03-2024-MTI - XERTICA - ASSINADO.txt")
     llm_context_data['gcs_legal_context_content']["MPAP_ATA_EXEMPLO.txt"] = get_gcs_file_content("Formas ágeis de contratação/MPAP/ATA DE REGISTRO DE PREÇOS Nº 041-2024-XERTICA.txt")
     llm_context_data['gcs_legal_context_content']["RISK_ANALYSIS_CONTEXT.txt"] = get_gcs_file_content("Detecção e Análise de Riscos/Detecção de análise de riscos.txt")
@@ -427,8 +427,8 @@ async def generate_etp_tr_endpoint(
             'title': document_subject, 
             'mimeType': 'application/vnd.google-apps.document'
         }
-        new_doc_metadata = drive_service.files().create(body=new_doc_body, fields='id').execute() # CORRIGIDO: Usando drive_service.files().create()
-        document_id = new_doc_metadata.get('id') # CORRIGIDO: Obtendo 'id' do objeto retornado pelo Drive API.
+        new_doc_metadata = drive_service.files().create(body=new_doc_body, fields='id').execute() 
+        document_id = new_doc_metadata.get('id') 
         
         if not document_id:
             raise HTTPException(status_code=500, detail="Falha ao criar novo documento no Google Docs.")
@@ -450,10 +450,10 @@ async def generate_etp_tr_endpoint(
         # 6. Definir Permissão de Leitura Pública e Obter Link
         permission = {
             'type': 'anyone', 
-            'role': 'reader'  
+            'role': 'writer' # ALTERADO: Permissão para "writer" (editável)
         }
         drive_service.permissions().create(fileId=document_id, body=permission, fields='id').execute()
-        logger.info(f"Permissões de leitura pública definidas para {document_id}.")
+        logger.info(f"Permissões de escrita pública definidas para {document_id}. CUIDADO: Documento editável por qualquer um com o link.")
 
         file_metadata = drive_service.files().get(fileId=document_id, fields='webViewLink').execute()
         document_link = file_metadata.get('webViewLink')
@@ -471,11 +471,12 @@ async def generate_etp_tr_endpoint(
 
     except HttpError as e:
         error_details = json.loads(e.content.decode()).get('error', {}).get('message', 'Erro desconhecido na API do Google.')
-        logger.exception(f"Erro na API do Google Docs/Drive: {error_details}")
+        exception_to_log = f"Erro na API do Google Docs/Drive: {error_details}"
+        logger.exception(exception_to_log) # Loga a exceção completa
         raise HTTPException(status_code=e.resp.status, detail=f"Erro na API do Google Docs/Drive: {error_details}")
     except Exception as e:
-        logger.exception(f"Erro na geração do documento.")
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno: {e}")
+        logger.exception(f"Erro inesperado na geração do documento.") # Loga a exceção completa
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno: {e}. Verifique os logs para mais detalhes.")
 
 # Para executar localmente para testes (descomente para usar):
 # if __name__ == "__main__":
