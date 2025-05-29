@@ -331,13 +331,292 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
     # usando todas as variáveis montadas acima.
     # =======================================================================
     llm_prompt_content_final = f"""
-Você é um assistente de IA altamente especializado...
-... (COLE AQUI O SEU PROMPT GRANDE E COMPLETO, O MESMO QUE VOCÊ TINHA ANTES) ...
-... Todas as suas seções de "DADOS FORNECIDOS", "CONTEÚDO EXTRAÍDO", "MAPA DE PREÇOS",
-... "CONTEÚDO DE ACELERADORES", "CONTEÚDO LEGAL", "CERTIFICADOS ABES", "CoE",
-... "DETALHES DOS ACELERADORES", "MAPEAMENTO DE PLACEHOLDERS", e os "MODELOS ETP/TR"
-... devem estar aqui, formatados corretamente dentro desta f-string.
-...
+Você é um assistente de IA altamente especializado na elaboração de documentos técnicos e legais para o setor público brasileiro (esferas Federal, Estadual e Municipal), com expertise em licitações (Lei nº 14.133/2021, Lei 13.303/2016) e nas soluções de Inteligência Artificial da Xertica.ai.
+
+Sua tarefa é gerar duas seções completas (ETP e TR) em Markdown.
+**O conteúdo gerado DEVE ser em PROSA rica e detalhada, com análises aprofundadas, justificativas robustas e descrições técnicas claras.** Para listas (ex: requisitos, obrigações), use o formato de lista Markdown (`*` ou `-`).
+Siga rigorosamente os modelos de estrutura ETP e TR fornecidos e adapte o conteúdo à esfera administrativa ({esfera_administrativa}) do `{orgao_nome}`.
+Preencha todos os `[ ]` e `{{placeholders}}` nos modelos com informações contextualmente relevantes, gerando todo o texto dinâmico e analítico necessário.
+
+**Sua resposta FINAL DEVE ser UM OBJETO JSON VÁLIDO.**
+```json
+{{
+    "subject": "Título Descritivo do Documento (ETP e TR para {orgao_nome})",
+    "etp_content": "Conteúdo COMPLETO do ETP em Markdown...",
+    "tr_content": "Conteúdo COMPLETO do TR em Markdown..."
+}}
+Regras Detalhadas:
+
+Adaptação por Esfera Administrativa: Ajuste linguagem e referências legais para {esfera_administrativa}.
+Placeholders: Para campos como número de processo, nomes de responsáveis, use **[A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]**. Processo: XXXXXX/{ano_atual}. CNAE: Sugira "6204-0/00 - Consultoria em tecnologia da informação", indicando que o órgão deve confirmar. Prazos de pagamento: Use valores comuns (ex: "5 dias úteis", "15 dias corridos").
+Mapa de Preços: Preencha a tabela realisticamente. Se {valor_estimado_input} for fornecido, aproxime a soma.
+Análise Profunda (RAG): Use rigorosamente os dados de GCS (Battle Cards, Data Sheets, Planos Operacionais), propostas PDF, certificados ABES e CoE para detalhar as soluções Xertica.ai. Destaque os diferenciais da Xertica.ai (integração GCP, especialização no setor público, inovação, etc.). Conecte as soluções à {justificativa_necessidade} e {objetivo_geral}.
+Resultados Esperados: Detalhe com indicadores qualitativos e, se possível, quantitativos.
+Justificativa Legal: Para {modelo_licitacao}, fundamente com a Lei 14.133/2021, Lei 13.303/2016 e contexto GCS, citando artigos.
+Formato Markdown: Use #, ##, ###, *, -. Tabelas devem ser formatadas corretamente.
+DADOS FORNECIDOS PELO USUÁRIO (Órgão Solicitante):
+
+JSON
+
+{json.dumps(llm_context_data, indent=2, ensure_ascii=False)}
+CONTEÚDO EXTRAÍDO DAS PROPOSTAS XERTICA.AI (Anexos PDF):
+Proposta Comercial: {proposta_comercial_content}
+Proposta Técnica: {proposta_tecnica_content}
+
+MAPA DE PREÇOS DE REFERÊNCIA (Estrutura Orientativa):
+{price_map_to_use_template}
+
+CONTEÚDO DE ACELERADORES XERTICA.AI (GCS - Battle Cards, Data Sheets, OP):
+{gcs_accel_str}
+
+CONTEÚDO DE DOCUMENTOS LEGAIS E CONTEXTO ADICIONAL (GCS):
+{gcs_legal_str}
+
+CONTEÚDO DE CERTIFICADOS ABES (GCS):
+{abes_certs_str}
+
+CONTEÚDO DO CENTRO DE EXCELÊNCIA XERTICA.AI (GCS):
+{coe_content_str}
+
+DETALHES DOS ACELERADORES (Input do Usuário e Contexto GCS):
+{accelerator_details_prompt_section}
+
+Mapeamento de Placeholders (Use estes para guiar o preenchimento):
+{{sumario_aceleradores}}: "{produtos_originais_display_str}"
+{{processo_administrativo_numero}}: "XXXXXX/{ano_atual}"
+{{local_etp_full}}: "{local_etp_full_placeholder}"
+{{mes_extenso}}: "{mes_extenso}"
+{{ano_atual}}: "{ano_atual}"
+{{esfera_administrativa}}: "{esfera_administrativa}"
+{{orgao_nome}}: "{orgao_nome}"
+{{titulo_projeto}}: "{titulo_projeto}"
+{{justificativa_necessidade}}: "{justificativa_necessidade}"
+{{objetivo_geral}}: "{objetivo_geral}"
+{{modelo_licitacao}}: "{modelo_licitacao}"
+{{contexto_geral_orgao}}: "{contexto_geral_orgao if contexto_geral_orgao else f'A {orgao_nome} busca modernizar seus serviços...'}"
+{{valor_estimado_input_str}}: "{valor_estimado_input if valor_estimado_input is not None else '[VALOR NÃO FORNECIDO, ESTIMAR]'}"
+{{prazos_estimados}}: "{prazos_estimados}"
+{{parcelamento_contratacao}}: "{parcelamento_contratacao}"
+{{justificativa_parcelamento_input}}: "{justificativa_parcelamento if justificativa_parcelamento else 'Não fornecida.'}"
+{{produtos_originais_display_str}}: "{produtos_originais_display_str}"
+{{introducao_etp}}: ... (Defina aqui o que o LLM deve gerar para este placeholder)
+{{problema_necessidade}}: ...
+{{referencia_in_sgd_me}}: ...
+{{necessidades_negocio}}: ...
+{{requisitos_tecnicos_funcionais}}: ...
+{{levantamento_mercado}}: ...
+{{estimativa_demanda}}: ...
+{{mapa_comparativo_custos}}: ...
+{{valor_estimado_total_etp}}: ...
+{{descricao_solucao_etp}}: ...
+{{parcelamento_justificativa}}: ...
+{{providencias_tomadas}}: ...
+{{declaracao_viabilidade}}: ...
+{{nomes_cargos_responsaveis}}: ...
+{{local_data_aprovacao}}: ...
+{{cidade_uf_tr}}: "{local_etp_full_placeholder.split(',')[0]}" # Tenta extrair cidade/UF do local do ETP
+{{data_tr}}: "{today.day} de {mes_extenso} de {ano_atual}"
+{{numero_processo_administrativo_tr}}: "XXXXXX/{ano_atual}"
+{{cnae_sugerido}}: "6204-0/00 - Consultoria em tecnologia da informação"
+{{prazo_vigencia_tr}}: "{prazos_estimados}" # Ou um valor padrão como "12 meses"
+{{regras_subcontratacao}}: ...
+{{regras_garantia}}: ...
+{{medicao_pagamento_dias_recebimento}}: "5 (cinco) dias úteis"
+{{medicao_pagamento_dias_faturamento}}: "5 (cinco) dias úteis após o ateste" # Exemplo
+{{medicao_pagamento_dias_pagamento}}: "15 (quinze) dias corridos após o ateste da Fatura"
+{{criterio_julgamento_tr}}: ...
+{{metodologia_implementacao}}: ...
+{{criterios_aceitacao_tr}}: ...
+{{obrigações_contratado_tr}}: ...
+{{obrigações_orgao_tr}}: ...
+{{gestao_contrato_tr}}: ...
+{{sancoes_administrativas_tr}}: ...
+{{anexos_tr}}: "Proposta Comercial e Técnica da Xertica.ai, Documentação dos Aceleradores (BC, DS, OP), Certificados ABES, Documento CoE, Exemplos Legais."
+
+MODELO DE ETP PARA PREENCHIMENTO:
+
+Estudo Técnico Preliminar
+Contratação de solução tecnológica para {{titulo_projeto}}
+
+Processo Administrativo nº {{processo_administrativo_numero}}
+
+{{local_etp_full}}
+
+Histórico de Revisões
+Data	Versão	Descrição	Autor
+{today.strftime('%d/%m/%Y')}	1.0	Finalização da primeira versão do documento	IA Xertica.ai
+
+Exportar para as Planilhas
+Área requisitante
+Identificação da Área requisitante: {{orgao_nome}}
+Nome do Responsável: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Matrícula: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+
+Introdução
+{{introducao_etp}}
+O Estudo Técnico Preliminar – ETP é o documento constitutivo da primeira etapa do planejamento de uma contratação, que caracteriza o interesse público envolvido e a sua melhor solução. Ele serve de base ao Termo de Referência a ser elaborado, caso se conclua pela viabilidade da contratação.
+
+O ETP tem por objetivo identificar e analisar os cenários para o atendimento de demanda registrada no Documento de Formalização da Demanda – DFD, bem como demonstrar a viabilidade técnica e econômica das soluções identificadas, fornecendo as informações necessárias para subsidiar a tomada de decisão e o prosseguimento do respectivo processo de contratação.
+{{contexto_geral_orgao}}
+
+Referência: Inciso XI, do art. 2º e art. 11 da IN SGD/ME nº 94/2022. {{referencia_in_sgd_me}}
+
+Descrição do problema e das necessidade
+{{problema_necessidade}}
+A {{orgao_nome}} busca, por meio da iniciativa '{{titulo_projeto}}', endereçar um desafio crítico identificado: {{justificativa_necessidade}}. Este problema impede [descrever impacto negativo, ex: a eficiente prestação de serviços, a tomada de decisões ágeis, a otimização de recursos].
+
+Necessidades do negócio
+{{necessidades_negocio}}
+A contratação visa suprir as seguintes necessidades do negócio do {{orgao_nome}}, com impactos diretos na eficiência operacional e na entrega de serviços:
+
+Redução de gargalos operacionais: Eliminar pontos de lentidão e ineficiência nos processos atuais, permitindo um fluxo de trabalho mais dinâmico.
+Melhoria da experiência do cidadão e do usuário interno: Proporcionar canais de comunicação e acesso a serviços mais intuitivos, rápidos e satisfatórios, elevando os índices de aprovação.
+Otimização da alocação de recursos: Liberar equipes e colaboradores de tarefas repetitivas e de baixo valor agregado, permitindo que se concentrem em atividades estratégicas e de maior impacto.
+Tomada de decisões baseada em dados: Fornecer dashboards e relatórios analíticos que transformem grandes volumes de dados em inteligência acionável, subsidiando escolhas estratégicas e operacionais.
+Garantia de conformidade e transparência: Assegurar que as operações estejam em total alinhamento com a legislação vigente e com os princípios de publicidade, promovendo a confiança e a integridade.
+Requisitos da Contratação
+{{requisitos_tecnicos_funcionais}}
+Os requisitos gerais e específicos para a contratação da solução proposta são:
+
+Requisitos Funcionais: A solução deve ser capaz de {{objetivo_geral}}, atuando de forma a [descrever como as funcionalidades chaves da solução Xertica.ai se conectam ao objetivo]. Detalhar com base nos aceleradores: {{sumario_aceleradores}}.
+Requisitos Não Funcionais:
+Segurança: A solução deve garantir a integridade, confidencialidade e disponibilidade dos dados, em conformidade com a LGPD e as melhores práticas de segurança da informação para o setor público.
+Escalabilidade: Deve possuir capacidade de expandir seus recursos e funcionalidades para atender a um aumento futuro na demanda e no volume de dados, sem degradação de desempenho.
+Disponibilidade: A solução deve operar com alta disponibilidade, minimizando interrupções e garantindo acesso contínuo aos serviços, com SLA (Service Level Agreement) de no mínimo 99.5%.
+Integração: Deve ter flexibilidade para integrar-se com os sistemas legados e plataformas já utilizadas pelo {{orgao_nome}}, utilizando APIs ou outros protocolos de comunicação padrão.
+Desempenho: A solução deve apresentar tempo de resposta ágil e eficiente, mesmo em cenários de alta demanda, assegurando uma experiência fluida para o usuário.
+Aderência Tecnológica: A solução deve estar alinhada com as especificações detalhadas na proposta técnica da Xertica.ai, que aborda aspectos de arquitetura, stack tecnológica e compatibilidade.
+Levantamento de mercado
+{{levantamento_mercado}}
+O levantamento de mercado demonstrou que a contratação de soluções de Inteligência Artificial para otimização de processos e atendimento é uma tendência consolidada no setor público e privado. A Xertica.ai se destaca por sua notória especialização em projetos para o setor público brasileiro, comprovada por [Citar exemplos de sucesso ou diferenciais como Certificados ABES, menção ao CoE, parcerias como MTI/SERPRO se aplicável com base no contexto GCS].
+
+A análise de mercado evidenciou que a Xertica.ai oferece um diferencial competitivo significativo em termos de integração nativa com o Google Cloud Platform (se aplicável), agilidade na implantação via aceleradores e uma compreensão aprofundada das particularidades legais e operacionais da administração pública.
+
+Estimativa de demanda - quantidade de bens e serviços
+{{estimativa_demanda}}
+A estimativa de demanda para os serviços/bens objeto desta contratação será:
+
+Quantitativos: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO, com base em volume esperado de usuários, transações ou dados]. Serão definidos em detalhe no Termo de Referência.
+Mapa comparativo dos custos
+{{mapa_comparativo_custos}}
+O valor estimado foi ratificado por [CITE FONTES DE PESQUISA, PUBLICAÇÕES OU DISPENSA/INEXIGIBILIDADE SE PUDER OU DEIXE EM ABERTO]:
+{price_map_to_use_template}
+
+Estimativa de custo total da contratação
+{{valor_estimado_total_etp}}
+O valor estimado global para esta contratação, para o período de {{prazos_estimados}}, é de R$ {{valor_estimado_input_str}}.
+
+Descrição da solução como um todo
+{{descricao_solucao_etp}}
+A solução proposta abrange a implementação dos aceleradores de Inteligência Artificial da Xertica.ai: {{sumario_aceleradores}}.
+
+Justificativa do parcelamento ou não da contratação
+{{parcelamento_justificativa}}
+Decisão sobre Parcelamento: {{parcelamento_contratacao}}.
+Justificativa: {{{{justificativa_parcelamento_input}} if parcelamento_contratacao == 'Justificar' and justificativa_parcelamento else f"A decisão por {('parcelar' if parcelamento_contratacao == 'Sim' else 'não parcelar')} a contratação foi embasada na busca por {('maior flexibilidade e entregas incrementais.' if parcelamento_contratacao == 'Sim' else 'garantir a integralidade da solução e sinergia entre componentes.')}"}}
+
+Providências a serem tomadas
+{{providencias_tomadas}}
+
+Formalização do processo e assinatura do contrato.
+Definição de cronograma detalhado.
+Designação de equipe técnica do {{orgao_nome}}.
+Capacitação e transferência de conhecimento.
+Configuração e personalização da solução Xertica.ai.
+Implantação em produção e acompanhamento.
+Acompanhamento contínuo da performance.
+Declaração de viabilidade
+{{declaracao_viabilidade}}
+Declara-se a viabilidade plena da contratação da solução Xertica.ai.
+
+Responsáveis
+{{nomes_cargos_responsaveis}}
+Equipe de Planejamento da Contratação (Portaria nº [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO], de {today.day} de {mes_extenso} de {ano_atual}).
+INTEGRANTE TÉCNICO: [Nome, Matrícula/SIAPE]
+INTEGRANTE REQUISITANTE: [Nome, Matrícula/SIAPE]
+
+Aprovação e declaração de conformidade
+Aprovo este Estudo Técnico Preliminar.
+{{local_etp_full}} {{local_data_aprovacao}}
+&lt;NEWPAGE>
+MODELO DE TR PARA PREENCHIMENTO:
+
+Termo de Referência – Nº [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+1 – DEFINIÇÃO DO OBJETO
+{{sumario_aceleradores}}
+Contratação de solução de {{sumario_aceleradores}} da Xertica.ai para {{objetivo_geral}} no {{orgao_nome}}.
+
+1.1. Objeto Sintético: Contratação de serviços de TI com IA, caracterizados como [SERVIÇOS TÉCNICOS ESPECIALIZADOS DE CONSULTORIA E DESENVOLVIMENTO DE IA], para modernização da Administração Pública {{esfera_administrativa}}.
+
+Ramo de Atividade: {{cnae_sugerido}} (o CNAE específico deverá ser confirmado pelo órgão).
+Quantitativos estimados: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO].
+Prazo do contrato: {{prazo_vigencia_tr}}.
+2 – FUNDAMENTAÇÃO DA CONTRATAÇÃO
+Detalhada nos Estudos Técnicos Preliminares (ETP) anexos.
+2.1. Previsto no Plano de Contratações Anual {ano_atual} do {{orgao_nome}}:
+
+ID PCA no PNCP e/ou SGA: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Data de publicação no PNCP: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Id do item no PCA: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO] 2.2. Justificativa: {{justificativa_necessidade}} no {{orgao_nome}}. 2.3. Enquadramento: {{modelo_licitacao}}, Lei nº 14.133/2021. [SE INEXIGIBILIDADE/DISPENSA, CITAR ARTIGOS].
+3 – DESCRIÇÃO DA SOLUÇÃO COMO UM TODO
+Implementação e suporte dos aceleradores Xertica.ai: {{sumario_aceleradores}}.
+3.1. Compreende: Disponibilização, instalação, configuração, serviços de implementação, customização, integração, suporte técnico, manutenção, treinamento.
+3.2. Forma de execução: indireta, regime de [EMPREITADA POR PREÇO GLOBAL/ESCOPO - A SER DEFINIDO PELO ÓRGÃO].
+3.3. Detalhes no ETP e Proposta Técnica Xertica.ai.
+
+4 – REQUISITOS DA CONTRATAÇÃO
+4.1. Requisitos:
+
+Funcionais: Atender a {{objetivo_geral}} com funcionalidades dos aceleradores. [CITE 3-5 FUNCIONALIDADES CHAVES].
+Não Funcionais: Segurança (LGPD), Escalabilidade, Disponibilidade (SLA 99.5%), Integração, Desempenho, Manutenibilidade.
+Práticas de Sustentabilidade: Conforme Lei nº 14.133/2021. 4.2. Carta de solidariedade: [SIM/NÃO - A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]. 4.3. SUBCONTRATAÇÃO: {{regras_subcontratacao}} (Ex: Não permitida para partes relevantes). 4.4. GARANTIA DA CONTRATAÇÃO: {{regras_garantia}} (Ex: 12 meses). 4.5. Transição contratual com transferência de conhecimento. 4.6. VISTORIA: [SIM/NÃO - A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO].
+5 – EXECUÇÃO DO OBJETO
+5.1. Prazos conforme Ordem de Serviço e cronograma da Proposta Técnica.
+5.2. Execução predominantemente remota, visitas técnicas se acordado.
+5.3. Observar métodos da Proposta Técnica Xertica.ai. {{metodologia_implementacao}}
+5.4. CONTRATADA fornecerá todos os recursos necessários.
+5.5. Prazo de garantia contratual: mínimo 12 meses (Art. 99, Lei nº 14.133/2021).
+
+6 – GESTÃO DO CONTRATO
+{{gestao_contrato_tr}}
+Fiscal do {{orgao_nome}} acompanhará a execução.
+6.1. Execução fiel ao contrato e Lei nº 14.133/2021.
+6.2. Comunicações por escrito.
+6.3. CONTRATANTE pode convocar representante da empresa.
+6.4. Contrato publicado no PNCP e portal de transparência.
+6.5. Reunião inicial para alinhamento e plano de fiscalização.
+6.6. Acompanhamento contínuo por fiscal(is) designados.
+6.7. CONTRATADA manterá preposto.
+
+7 – MEDIÇÃO E PAGAMENTO
+7.1. Avaliação por Instrumento de Medição de Resultado (IMR): [DEFINIR METODOLOGIA E REGRAS - Ex: SLAs, disponibilidade, satisfação]. {{criterios_aceitacao_tr}}
+7.2. Pagamento mensal conforme indicadores do IMR.
+7.3. Recebimento provisório e definitivo (Art. 140, Lei nº 14.133/2021).
+7.4. Faturamento: Fatura/Nota Fiscal em {{medicao_pagamento_dias_recebimento}} após ateste da medição, com regularidade fiscal/trabalhista.
+7.5. Pagamento: {{medicao_pagamento_dias_pagamento}} após atesto da Fatura/Nota Fiscal. (Prazo para faturamento pela contratada: {{medicao_pagamento_dias_faturamento}})
+
+8 – SELEÇÃO DO FORNECEDOR
+8.1. Seleção por {{modelo_licitacao}}, critério de julgamento: {{criterio_julgamento_tr}} [MENOR PREÇO/MELHOR TÉCNICA/TÉCNICA E PREÇO/MAIOR RETORNO ECONÔMICO - A SER DEFINIDO PELO ÓRGÃO].
+
+Exigências de Habilitação: Conforme Art. 62-70, Lei nº 14.133/2021 (jurídica, técnica, econômico-financeira, fiscal/trabalhista, cumprimento do inciso XXXIII, art. 7º CF).
+9 – ESTIMATIVA DO PREÇO
+9.1. Valor estimado: R$ {{valor_estimado_input_str}}, detalhado no ETP.
+
+10 – ADEQUAÇÃO ORÇAMENTÁRIA
+Recursos da Lei Orçamentária Anual do(a) {{esfera_administrativa}} ({{orgao_nome}}).
+10.1. Dotação:
+
+UG Executora: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Programa de Trabalho: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Fonte: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO]
+Natureza da Despesa: [A SER PREENCHIDO PELO ÓRGÃO/ADMINISTRAÇÃO - ex: 33.90.39 ou 44.90.39] 10.2. Dotação de exercícios subsequentes indicada após aprovação da LOA respectiva.
+{{anexos_tr}}
+Há anexos no pedido: Sim (Proposta Comercial e Técnica da Xertica.ai, etc.).
+
+OBRIGAÇÕES DO CONTRATADO: {{obrigações_contratado_tr}}
+OBRIGAÇÕES DO ÓRGÃO: {{obrigações_orgao_tr}}
+SANÇÕES ADMINISTRATIVAS: {{sancoes_administrativas_tr}}
+
 Gere o objeto JSON agora.
 """
 
