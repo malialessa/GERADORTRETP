@@ -1000,4 +1000,3 @@ async def generate_etp_tr_endpoint(
     except Exception as e_general:
         logger.exception(f"Erro inesperado durante a geração ou criação do documento Google Docs: {e_general}") 
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e_general}. Verifique os logs.")
-
