@@ -76,7 +76,7 @@ if not GCP_PROJECT_LOCATION:
 
 try:
     vertexai.init(project=GCP_PROJECT_ID, location=GCP_PROJECT_LOCATION)
-    gemini_model = GenerativeModel("gemini-2.0-flash-001")
+    gemini_model = GenerativeModel("gemini-1.5-pro-001")
     _generation_config = GenerationConfig(temperature=0.7, max_output_tokens=150000, response_mime_type="application/json")
     logger.info(f"Vertex AI inicializado com projeto '{GCP_PROJECT_ID}' e localização '{GCP_PROJECT_LOCATION}'. Modelo Gemini-1.5-flash-001 carregado.")
 except Exception as e:
