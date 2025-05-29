@@ -60,7 +60,7 @@ app.add_middleware(
 
 
 # Variáveis de Ambiente e Inicialização de Clientes GCP / Vertex AI
-GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "br-ventasbrasil-cld-01")
 GCP_PROJECT_LOCATION = os.getenv("GCP_PROJECT_LOCATION", "us-central1")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "docsorgaospublicos")
 
@@ -76,8 +76,8 @@ if not GCP_PROJECT_LOCATION:
 
 try:
     vertexai.init(project=GCP_PROJECT_ID, location=GCP_PROJECT_LOCATION)
-    gemini_model = GenerativeModel("gemini-1.5-flash-001")
-    _generation_config = GenerationConfig(temperature=0.7, max_output_tokens=8192, response_mime_type="application/json")
+    gemini_model = GenerativeModel("gemini-2.0-flash-001")
+    _generation_config = GenerationConfig(temperature=0.7, max_output_tokens=150000, response_mime_type="application/json")
     logger.info(f"Vertex AI inicializado com projeto '{GCP_PROJECT_ID}' e localização '{GCP_PROJECT_LOCATION}'. Modelo Gemini-1.5-flash-001 carregado.")
 except Exception as e:
     logger.exception(f"Erro ao inicializar Vertex AI ou carregar modelo Gemini: {e}")
