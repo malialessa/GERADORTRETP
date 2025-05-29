@@ -223,24 +223,58 @@ def apply_basic_markdown_to_docs_requests(markdown_content: str) -> List[Dict]:
     return requests
 
 async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
-    if not gemini_model:
-        logger.error("Modelo Gemini não inicializado. Não é possível gerar conteúdo.")
-        raise HTTPException(status_code=503, detail="Serviço de IA (LLM) não configurado ou falhou ao iniciar.")
+    # ... (código anterior da função) ...
 
-    logger.info("Iniciando chamada ao modelo Gemini para geração de ETP/TR.")
-    gcs_accel_str_parts = []
-    for product_key, content in llm_context_data.get('gcs_accelerator_content', {}).items():
-        if content:
-            gcs_accel_str_parts.append(f"Conteúdo GCS - Acelerador {product_key}:\n{content}\n---\n")
-    gcs_accel_str = "\n".join(gcs_accel_str_parts) if gcs_accel_str_parts else "Nenhum conteúdo de acelerador do GCS fornecido.\n"
+    # Placeholder para o prompt (ou o prompt real)
+    llm_prompt_content_final = f"""# SEU PROMPT AQUI OU O PLACEHOLDER
+"""
+    # ... (qualquer outro código antes do try) ...
 
-    gcs_legal_str_parts = []
-    sorted_legal_items = sorted(llm_context_data.get('gcs_legal_context_content', {}).items())
-    for file_name, content in sorted_legal_items:
-        if content:
-            gcs_legal_str_parts.append(f"Conteúdo GCS - Documento Legal/Contexto Adicional ({file_name}):\n{content}\n---\n")
-    gcs_legal_str = "\n".join(gcs_legal_str_parts) if gcs_legal_str_parts else "Nenhum conteúdo legal/contextual do GCS fornecido.\n"
+    response_text = None # Esta linha deve estar no mesmo nível de indentação que o 'try'
+    try:
+        # A LINHA 326 (logger.info) DEVE ESTAR INDENTADA ASSIM:
+        logger.info(f"Enviando prompt para o Gemini (primeiros 1000 chars): {llm_prompt_content_final[:1000].replace('\n', ' ')}...")
+        
+        # As linhas seguintes dentro do bloco 'try' também devem ter a mesma indentação
+        response = await gemini_model.generate_content_async(
+            llm_prompt_content_final,
+            generation_config=_generation_config
+        )
+        
+        if not (response.candidates and response.candidates[0].content and response.candidates[0].content.parts):
+            logger.error(f"Resposta do Gemini inválida ou sem conteúdo esperado. Resposta completa: {response}")
+            raise Exception("Resposta inválida do modelo Gemini (sem partes de conteúdo).")
 
+        response_text = response.candidates[0].content.parts[0].text
+        logger.info(f"Resposta RAW do Gemini recebida (primeiros 500 chars): {response_text[:500].replace('\n', ' ')}...")
+        
+        match_json = re.search(r"```json\s*([\s\S]*?)\s*```", response_text, re.DOTALL)
+        if match_json:
+            json_str = match_json.group(1)
+            logger.info("JSON extraído de bloco de código Markdown.")
+        else:
+            json_str = response_text
+            logger.info("Resposta do Gemini assumida como JSON direto (sem bloco de código Markdown).")
+            
+        parsed_content = json.loads(json_str)
+        
+        logger.info(f"Conteúdo parseado do Gemini. Tipo: {type(parsed_content)}")
+        if isinstance(parsed_content, dict):
+            logger.info(f"Chaves do dicionário parseado: {list(parsed_content.keys())}")
+        else:
+            logger.error(f"ALERTA CRÍTICO: Conteúdo parseado do Gemini NÃO é um dicionário! Conteúdo (primeiros 500 chars): {str(parsed_content)[:500]}")
+            raise ValueError(f"LLM_OUTPUT_FORMAT_ERROR: Esperava um objeto JSON (dict), mas recebi {type(parsed_content)}. Verifique a resposta do LLM.")
+            
+        logger.info("Resposta do Gemini parseada como JSON e validada como dict com sucesso.")
+        return parsed_content
+
+    except json.JSONDecodeError as e: # O 'except' deve estar no mesmo nível do 'try'
+        # O código dentro do 'except' deve ser indentado um nível a mais
+        logger.error(f"Erro ao parsear JSON da resposta do Gemini: {e}.")
+        problematic_json_string = response_text if response_text is not None else "String JSON não capturada."
+        logger.error(f"String JSON que causou o erro (primeiros 1000 chars): {problematic_json_string[:1000]}")
+        raise HTTPException(status_code=500, detail=f"Erro no formato JSON retornado pelo Gemini: {e}. Verifique os logs do servidor para a string exata.")
+    # ... (outros blocos except, todos no mesmo nível do 'try') ...
     orgao_nome = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
     titulo_projeto = llm_context_data.get('tituloProjeto', 'uma iniciativa')
     justificativa_necessidade = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
