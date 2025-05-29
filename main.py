@@ -223,19 +223,131 @@ def apply_basic_markdown_to_docs_requests(markdown_content: str) -> List[Dict]:
     return requests
 
 async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
-    # ... (código anterior da função) ...
+    if not gemini_model:
+        logger.error("Modelo Gemini não inicializado. Não é possível gerar conteúdo.")
+        raise HTTPException(status_code=503, detail="Serviço de IA (LLM) não configurado ou falhou ao iniciar.")
 
-    # Placeholder para o prompt (ou o prompt real)
-    llm_prompt_content_final = f"""# SEU PROMPT AQUI OU O PLACEHOLDER
+    logger.info("Iniciando preparação do prompt e chamada ao Gemini para geração de ETP/TR.")
+    
+    # =======================================================================
+    # PASSO 1: MONTAGEM DE TODAS AS VARIÁVEIS DE CONTEXTO PARA O PROMPT
+    # Coloque aqui TODA a sua lógica para definir:
+    # gcs_accel_str, gcs_legal_str, orgao_nome, titulo_projeto, 
+    # justificativa_necessidade, objetivo_geral, prazos_estimados, 
+    # valor_estimado_input, modelo_licitacao, parcelamento_contratacao, 
+    # justificativa_parcelamento, contexto_geral_orgao, today, mes_extenso, 
+    # ano_atual, esfera_administrativa, local_etp_full_placeholder, 
+    # accelerator_details_prompt_section, proposta_comercial_content, 
+    # proposta_tecnica_content, price_map_to_use_template, 
+    # produtos_originais_display_str, abes_certs_str, coe_content_str
+    # Exemplo de como começar:
+    # =======================================================================
+    gcs_accel_str_parts = []
+    for product_key, content in llm_context_data.get('gcs_accelerator_content', {}).items():
+        if content:
+            gcs_accel_str_parts.append(f"Conteúdo GCS - Acelerador {product_key}:\n{content}\n---\n")
+    gcs_accel_str = "\n".join(gcs_accel_str_parts) if gcs_accel_str_parts else "Nenhum conteúdo de acelerador do GCS fornecido.\n"
+
+    gcs_legal_str_parts = []
+    sorted_legal_items = sorted(llm_context_data.get('gcs_legal_context_content', {}).items())
+    for file_name, content in sorted_legal_items:
+        if content:
+            gcs_legal_str_parts.append(f"Conteúdo GCS - Documento Legal/Contexto Adicional ({file_name}):\n{content}\n---\n")
+    gcs_legal_str = "\n".join(gcs_legal_str_parts) if gcs_legal_str_parts else "Nenhum conteúdo legal/contextual do GCS fornecido.\n"
+    
+    orgao_nome = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
+    titulo_projeto = llm_context_data.get('tituloProjeto', 'uma iniciativa')
+    justificativa_necessidade = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
+    objetivo_geral = llm_context_data.get('objetivoGeral', 'um objetivo ambicioso.')
+    prazos_estimados = llm_context_data.get('prazosEstimados', 'prazos a serem definidos.')
+    valor_estimado_input = llm_context_data.get('valorEstimado')
+    modelo_licitacao = llm_context_data.get('modeloLicitacao', 'uma modalidade padrão.')
+    parcelamento_contratacao = llm_context_data.get('parcelamentoContratacao', 'Não especificado.')
+    justificativa_parcelamento = llm_context_data.get('justificativaParcelamento', 'Não se aplica.')
+    contexto_geral_orgao = llm_context_data.get('contextoGeralOrgao', '')
+    today = date.today()
+    meses_pt = {1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril", 5: "maio", 6: "junho", 7: "julho", 8: "agosto", 9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro"}
+    mes_extenso = meses_pt[today.month]
+    ano_atual = today.year
+    esfera_administrativa = "Federal"
+    orgao_nome_lower = orgao_nome.lower()
+    if any(term in orgao_nome_lower for term in ["municipal", "pref.", "prefeitura"]):
+        esfera_administrativa = "Municipal"
+    elif any(term in orgao_nome_lower for term in ["estadual", "governo do estado", "secretaria de estado", "tj", "tribunal de justiça", "estado de"]):
+        esfera_administrativa = "Estadual"
+    local_etp_full_placeholder = f"[LOCAL PADRÃO - CIDADE/UF], {today.day} de {mes_extenso} de {ano_atual}" # Você pode querer refinar isso
+    
+    accelerator_details_prompt_list = []
+    produtos_selecionados_normalizados = llm_context_data.get("produtosXertica", [])
+    for product_name_normalized in produtos_selecionados_normalizados:
+        product_name_original = product_name_normalized.replace('_', ' ')
+        integration_key = f"integracao_{product_name_normalized}"
+        user_integration_detail = llm_context_data.get(integration_key, "").strip()
+        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (BC)", "Dados do Battle Card não disponíveis.")
+        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (DS)", "Dados do Data Sheet não disponíveis.")
+        op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP)",
+                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GCP)",
+                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GMP)",
+                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GWS)",
+                                 "Dados do Plano Operacional não disponíveis."))))
+        bc_summary = (bc_content_prod_raw[:min(800, len(bc_content_prod_raw))] + "...") if len(bc_content_prod_raw) > 800 else bc_content_prod_raw
+        ds_summary = (ds_content_prod_raw[:min(800, len(ds_content_prod_raw))] + "...") if len(ds_content_prod_raw) > 800 else ds_content_prod_raw
+        op_summary = (op_content_prod_raw[:min(800, len(op_content_prod_raw))] + "...") if len(op_content_prod_raw) > 800 else op_content_prod_raw
+        accelerator_details_prompt_list.append(f"""
+    - **Acelerador:** {product_name_original}
+      - **Resumo do Battle Card (GCS):** {bc_summary if bc_summary else 'Não disponível.'}
+      - **Detalhes do Data Sheet (GCS):** {ds_summary if ds_summary else 'Não disponível.'}
+      - **Detalhes do Plano Operacional (GCS):** {op_summary if op_summary else 'Não disponível.'}
+      - **Aplicação Específica no Órgão (Input do Usuário para {product_name_original}):** {user_integration_detail if user_integration_detail else 'Nenhum detalhe de integração fornecido.'}
+        """)
+    accelerator_details_prompt_section = "\n".join(accelerator_details_prompt_list) if accelerator_details_prompt_list else "Nenhum acelerador Xertica.ai selecionado."
+
+    proposta_comercial_content = llm_context_data.get("proposta_comercial_content", "Conteúdo da proposta comercial não fornecido.")
+    proposta_tecnica_content = llm_context_data.get("proposta_tecnica_content", "Conteúdo da proposta técnica não fornecido.")
+    price_map_federal_template = """
+| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
+|---|---|---|---|---|---|
+| [Preencher] | [Preencher] | [Preencher] | [Preencher] | [Preencher] | [Preencher] |
+"""[1:]
+    price_map_estadual_municipal_template = """
+| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Empresa Contratada (Ref.) | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
+|---|---|---|---|---|---|---|
+| [Preencher] | [Preencher] | Xertica.ai | [Preencher] | [Preencher] | [Preencher] | [Preencher] |
+"""[1:]
+    price_map_to_use_template = price_map_federal_template if esfera_administrativa == "Federal" else price_map_estadual_municipal_template
+    produtos_originais_display_str = ', '.join([name_norm.replace('_', ' ') for name_norm in produtos_selecionados_normalizados]) if produtos_selecionados_normalizados else 'Nenhum acelerador especificado'
+    
+    abes_certs_str_parts = []
+    for product_name, content in llm_context_data.get('gcs_abes_certificates_content', {}).items():
+        if content:
+            abes_certs_str_parts.append(f"Certificado ABES para {product_name}:\n{content}\n---\n")
+    abes_certs_str = "\n".join(abes_certs_str_parts) if abes_certs_str_parts else "Nenhum certificado ABES carregado.\n"
+    
+    coe_content_str = llm_context_data.get('gcs_coe_content', "Conteúdo do Centro de Excelência não carregado.\n")
+
+    # =======================================================================
+    # PASSO 2: DEFINIÇÃO DO PROMPT COMPLETO E FINAL
+    # Cole aqui o SEU prompt completo que você quer enviar para o Gemini,
+    # usando todas as variáveis montadas acima.
+    # =======================================================================
+    llm_prompt_content_final = f"""
+Você é um assistente de IA altamente especializado...
+... (COLE AQUI O SEU PROMPT GRANDE E COMPLETO, O MESMO QUE VOCÊ TINHA ANTES) ...
+... Todas as suas seções de "DADOS FORNECIDOS", "CONTEÚDO EXTRAÍDO", "MAPA DE PREÇOS",
+... "CONTEÚDO DE ACELERADORES", "CONTEÚDO LEGAL", "CERTIFICADOS ABES", "CoE",
+... "DETALHES DOS ACELERADORES", "MAPEAMENTO DE PLACEHOLDERS", e os "MODELOS ETP/TR"
+... devem estar aqui, formatados corretamente dentro desta f-string.
+...
+Gere o objeto JSON agora.
 """
-    # ... (qualquer outro código antes do try) ...
 
-    response_text = None # Esta linha deve estar no mesmo nível de indentação que o 'try'
+    # =======================================================================
+    # PASSO 3: CHAMADA À API GEMINI E PROCESSAMENTO DA RESPOSTA (UM ÚNICO BLOCO TRY/EXCEPT)
+    # =======================================================================
+    response_text = None
     try:
-        # A LINHA 326 (logger.info) DEVE ESTAR INDENTADA ASSIM:
         logger.info(f"Enviando prompt para o Gemini (primeiros 1000 chars): {llm_prompt_content_final[:1000].replace('\n', ' ')}...")
         
-        # As linhas seguintes dentro do bloco 'try' também devem ter a mesma indentação
         response = await gemini_model.generate_content_async(
             llm_prompt_content_final,
             generation_config=_generation_config
@@ -268,134 +380,19 @@ async def generate_etp_tr_content_with_gemini(llm_context_data: Dict) -> Dict:
         logger.info("Resposta do Gemini parseada como JSON e validada como dict com sucesso.")
         return parsed_content
 
-    except json.JSONDecodeError as e: # O 'except' deve estar no mesmo nível do 'try'
-        # O código dentro do 'except' deve ser indentado um nível a mais
-        logger.error(f"Erro ao parsear JSON da resposta do Gemini: {e}.")
-        problematic_json_string = response_text if response_text is not None else "String JSON não capturada."
-        logger.error(f"String JSON que causou o erro (primeiros 1000 chars): {problematic_json_string[:1000]}")
-        raise HTTPException(status_code=500, detail=f"Erro no formato JSON retornado pelo Gemini: {e}. Verifique os logs do servidor para a string exata.")
-    # ... (outros blocos except, todos no mesmo nível do 'try') ...
-    orgao_nome = llm_context_data.get('orgaoSolicitante', 'o Órgão Solicitante')
-    titulo_projeto = llm_context_data.get('tituloProjeto', 'uma iniciativa')
-    justificativa_necessidade = llm_context_data.get('justificativaNecessidade', 'um problema genérico.')
-    objetivo_geral = llm_context_data.get('objetivoGeral', 'um objetivo ambicioso.')
-    prazos_estimados = llm_context_data.get('prazosEstimados', 'prazos a serem definidos.')
-    valor_estimado_input = llm_context_data.get('valorEstimado')
-    modelo_licitacao = llm_context_data.get('modeloLicitacao', 'uma modalidade padrão.')
-    parcelamento_contratacao = llm_context_data.get('parcelamentoContratacao', 'Não especificado.')
-    justificativa_parcelamento = llm_context_data.get('justificativaParcelamento', 'Não se aplica.')
-    contexto_geral_orgao = llm_context_data.get('contextoGeralOrgao', '')
-    today = date.today()
-    meses_pt = {1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril", 5: "maio", 6: "junho", 7: "julho", 8: "agosto", 9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro"}
-    mes_extenso = meses_pt[today.month]
-    ano_atual = today.year
-    esfera_administrativa = "Federal"
-    orgao_nome_lower = orgao_nome.lower()
-    if any(term in orgao_nome_lower for term in ["municipal", "pref.", "prefeitura"]):
-        esfera_administrativa = "Municipal"
-    elif any(term in orgao_nome_lower for term in ["estadual", "governo do estado", "secretaria de estado", "tj", "tribunal de justiça", "estado de"]):
-        esfera_administrativa = "Estadual"
-    local_etp_full_placeholder = f"[LOCAL PADRÃO - CIDADE/UF], {today.day} de {mes_extenso} de {ano_atual}"
-    accelerator_details_prompt_list = []
-    produtos_selecionados_normalizados = llm_context_data.get("produtosXertica", [])
-    for product_name_normalized in produtos_selecionados_normalizados:
-        product_name_original = product_name_normalized.replace('_', ' ')
-        integration_key = f"integracao_{product_name_normalized}"
-        user_integration_detail = llm_context_data.get(integration_key, "").strip()
-        bc_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (BC)", "Dados do Battle Card não disponíveis.")
-        ds_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (DS)", "Dados do Data Sheet não disponíveis.")
-        op_content_prod_raw = llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP)",
-                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GCP)",
-                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GMP)",
-                                 llm_context_data.get('gcs_accelerator_content', {}).get(f"{product_name_original} (OP_GWS)",
-                                 "Dados do Plano Operacional não disponíveis."))))
-        bc_summary = (bc_content_prod_raw[:min(800, len(bc_content_prod_raw))] + "...") if len(bc_content_prod_raw) > 800 else bc_content_prod_raw
-        ds_summary = (ds_content_prod_raw[:min(800, len(ds_content_prod_raw))] + "...") if len(ds_content_prod_raw) > 800 else ds_content_prod_raw
-        op_summary = (op_content_prod_raw[:min(800, len(op_content_prod_raw))] + "...") if len(op_content_prod_raw) > 800 else op_content_prod_raw
-        accelerator_details_prompt_list.append(f"""
-    - **Acelerador:** {product_name_original}
-      - **Resumo do Battle Card (GCS):** {bc_summary if bc_summary else 'Não disponível.'}
-      - **Detalhes do Data Sheet (GCS):** {ds_summary if ds_summary else 'Não disponível.'}
-      - **Detalhes do Plano Operacional (GCS):** {op_summary if op_summary else 'Não disponível.'}
-      - **Aplicação Específica no Órgão (Input do Usuário para {product_name_original}):** {user_integration_detail if user_integration_detail else 'Nenhum detalhe de integração fornecido. O LLM deve inferir a aplicação com base no problema/solução, nos documentos do acelerador e no contexto Xertica.ai'}
-        """)
-    accelerator_details_prompt_section = "\n".join(accelerator_details_prompt_list) if accelerator_details_prompt_list else "Nenhum acelerador Xertica.ai selecionado ou detalhes não fornecidos."
-    proposta_comercial_content = llm_context_data.get("proposta_comercial_content", "Conteúdo da proposta comercial não fornecido ou erro na extração.")
-    proposta_tecnica_content = llm_context_data.get("proposta_tecnica_content", "Conteúdo da proposta técnica não fornecido ou erro na extração.")
-    price_map_federal_template = """
-| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
-|---|---|---|---|---|---|
-| [Preencher] | [Preencher] | [Preencher] | [Preencher] | [Preencher] | [Preencher] |
-"""[1:]
-    price_map_estadual_municipal_template = """
-| Tipo de Licença/Serviço | Fonte de Pesquisa/Contrato Referência | Empresa Contratada (Ref.) | Valor Unitário Anual (R$) | Valor Mensal (R$) | Quantidade Referencial | Valor Total Estimado (R$) Anual |
-|---|---|---|---|---|---|---|
-| [Preencher] | [Preencher] | Xertica.ai | [Preencher] | [Preencher] | [Preencher] | [Preencher] |
-"""[1:]
-    price_map_to_use_template = price_map_federal_template if esfera_administrativa == "Federal" else price_map_estadual_municipal_template
-    produtos_originais_display_str = ', '.join([name_norm.replace('_', ' ') for name_norm in produtos_selecionados_normalizados]) if produtos_selecionados_normalizados else 'Nenhum acelerador especificado'
-    abes_certs_str_parts = []
-    for product_name, content in llm_context_data.get('gcs_abes_certificates_content', {}).items():
-        if content:
-            abes_certs_str_parts.append(f"Certificado ABES para {product_name}:\n{content}\n---\n")
-    abes_certs_str = "\n".join(abes_certs_str_parts) if abes_certs_str_parts else "Nenhum certificado ABES carregado.\n"
-    coe_content_str = llm_context_data.get('gcs_coe_content', "Conteúdo do Centro de Excelência não carregado.\n")
-
-    # ==========================================================================
-    # INÍCIO DO PLACEHOLDER PARA O CONTEÚDO DO PROMPT
-    # ==========================================================================
-    llm_prompt_content_final = f"""# COLE AQUI O CONTEÚDO COMPLETO DO SEU PROMPT DEFINIDO ANTERIORMENTE
-# Certifique-se de que as variáveis como {json.dumps(llm_context_data, indent=2, ensure_ascii=False)},
-# {proposta_comercial_content}, {proposta_tecnica_content}, {price_map_to_use_template},
-# {gcs_accel_str}, {gcs_legal_str}, {abes_certs_str}, {coe_content_str},
-# {accelerator_details_prompt_section}, e todos os placeholders {{exemplo}}
-# estão corretamente formatados dentro da f-string.
-"""
-    # ==========================================================================
-    # FIM DO PLACEHOLDER PARA O CONTEÚDO DO PROMPT
-    # ==========================================================================
-
-    response_text = None
-    try:
-        logger.info(f"Enviando prompt para o Gemini (primeiros 1000 chars): {llm_prompt_content_final[:1000].replace('\n', ' ')}...")
-        response = await gemini_model.generate_content_async( # Usando async conforme original
-            llm_prompt_content_final,
-            generation_config=_generation_config
-        )
-        if not (response.candidates and response.candidates[0].content and response.candidates[0].content.parts):
-            logger.error(f"Resposta do Gemini inválida ou sem conteúdo esperado. Resposta completa: {response}")
-            raise Exception("Resposta inválida do modelo Gemini (sem partes de conteúdo).")
-
-        response_text = response.candidates[0].content.parts[0].text
-        logger.info(f"Resposta RAW do Gemini recebida (primeiros 500 chars): {response_text[:500].replace('\n', ' ')}...")
-        match_json = re.search(r"```json\s*([\s\S]*?)\s*```", response_text, re.DOTALL)
-        if match_json:
-            json_str = match_json.group(1)
-            logger.info("JSON extraído de bloco de código Markdown.")
-        else:
-            json_str = response_text
-            logger.info("Resposta do Gemini assumida como JSON direto (sem bloco de código Markdown).")
-        parsed_content = json.loads(json_str)
-        logger.info(f"Conteúdo parseado do Gemini. Tipo: {type(parsed_content)}")
-        if isinstance(parsed_content, dict):
-            logger.info(f"Chaves do dicionário parseado: {list(parsed_content.keys())}")
-        else:
-            logger.error(f"ALERTA CRÍTICO: Conteúdo parseado do Gemini NÃO é um dicionário! Conteúdo (primeiros 500 chars): {str(parsed_content)[:500]}")
-            raise ValueError(f"LLM_OUTPUT_FORMAT_ERROR: Esperava um objeto JSON (dict), mas recebi {type(parsed_content)}. Verifique a resposta do LLM.")
-        logger.info("Resposta do Gemini parseada como JSON e validada como dict com sucesso.")
-        return parsed_content
     except json.JSONDecodeError as e:
         logger.error(f"Erro ao parsear JSON da resposta do Gemini: {e}.")
         problematic_json_string = response_text if response_text is not None else "String JSON não capturada."
         logger.error(f"String JSON que causou o erro (primeiros 1000 chars): {problematic_json_string[:1000]}")
         raise HTTPException(status_code=500, detail=f"Erro no formato JSON retornado pelo Gemini: {e}. Verifique os logs do servidor para a string exata.")
     except AttributeError as e:
-        logger.error(f"Estrutura da resposta do Gemini inesperada: {e}. Resposta: {str(response)[:500]}")
+        response_str_for_log = str(response)[:500] if 'response' in locals() and response is not None else "Response object not available or None."
+        logger.error(f"Estrutura da resposta do Gemini inesperada: {e}. Resposta (início): {response_str_for_log}")
         raise HTTPException(status_code=500, detail=f"Formato de resposta inesperado do Gemini: {e}")
     except Exception as e:
         logger.exception(f"Erro crítico ao chamar a API do Gemini ou processar sua resposta: {e}")
         raise HTTPException(status_code=500, detail=f"Falha na geração de conteúdo via IA: {e}")
-
+               
 @app.post("/generate_etp_tr", summary="Gera Documentos ETP e TR", tags=["Documentos"])
 async def generate_etp_tr_endpoint(
     request: Request,
